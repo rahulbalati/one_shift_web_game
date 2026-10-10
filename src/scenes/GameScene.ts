@@ -104,12 +104,8 @@ export class GameScene extends Phaser.Scene {
     this.keyboardMode = false;
     this.selectedRow = 0;
     this.selectedCol = 0;
-    if (data.board) {
-      this.board = cloneBoard(data.board);
-    }
-    if (data.scrambledBoard) {
-      this.scrambledBoard = cloneBoard(data.scrambledBoard);
-    }
+    this.board = data.board ? cloneBoard(data.board) : (undefined as unknown as Board);
+    this.scrambledBoard = data.scrambledBoard ? cloneBoard(data.scrambledBoard) : (undefined as unknown as Board);
   }
 
   create() {

@@ -138,46 +138,53 @@ export class VictoryScene extends Phaser.Scene {
     const btnH = 48 * sf;
     const btnY = panY + 130 * sf;
 
-    const btnBg = this.add.rectangle(panX, btnY, btnW, btnH, COLORS.accent)
-      .setStrokeStyle(0)
-      .setAlpha(0) as Phaser.GameObjects.Rectangle;
-    const btnTxt = this.add.text(panX, btnY, '→ Next Level', {
+    const btnBg = this.add.rectangle(0, 0, btnW, btnH, COLORS.accent)
+      .setOrigin(0.5);
+    const btnTxt = this.add.text(0, 0, '→ Next Level', {
       fontSize: `${Math.round(16 * sf)}px`,
       fontFamily: font,
       fontStyle: 'bold',
       resolution: dpr,
       color: '#' + COLORS.bgDeep.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5).setAlpha(0);
+    }).setOrigin(0.5);
 
-    this.tweens.add({ targets: [btnBg, btnTxt], alpha: 1, duration: 300, delay: 700 });
+    const nextBtn = this.add.container(panX, btnY, [btnBg, btnTxt]);
+    nextBtn.setSize(btnW, btnH);
+    nextBtn.setAlpha(0);
+    nextBtn.setInteractive({ useHandCursor: true });
+
+    this.tweens.add({ targets: nextBtn, alpha: 1, duration: 300, delay: 600 });
 
     // Subtle pulse on Next button
     this.tweens.add({
-      targets: [btnBg, btnTxt],
-      scaleX: 1.04, scaleY: 1.04,
+      targets: nextBtn,
+      scaleX: 1.05,
+      scaleY: 1.05,
       duration: 800,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.InOut',
-      delay: 900,
+      delay: 800,
     });
 
-    const nextBtn = this.add.container(0, 0, [btnBg, btnTxt]);
-    nextBtn.setSize(btnW, btnH);
-    nextBtn.setInteractive({ useHandCursor: true });
     nextBtn.on('pointerover', () => {
       btnBg.setFillStyle(COLORS.accentHover);
-      this.tweens.add({ targets: nextBtn, scaleX: 1.06, scaleY: 1.06, duration: 80 });
     });
     nextBtn.on('pointerout', () => {
       btnBg.setFillStyle(COLORS.accent);
-      this.tweens.add({ targets: nextBtn, scaleX: 1, scaleY: 1, duration: 80 });
     });
-    nextBtn.on('pointerup', () => {
+
+    let clicked = false;
+    const handleNext = () => {
+      if (clicked) return;
+      clicked = true;
       sounds.playClick();
       crazyGames.gameplayStart();
       this.nextLevel();
-    });
+    };
+
+    nextBtn.on('pointerdown', handleNext);
+    nextBtn.on('pointerup', handleNext);
 
     // Also allow keyboard Enter/Space
     if (this.input.keyboard) {
