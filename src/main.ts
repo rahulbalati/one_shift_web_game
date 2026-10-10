@@ -1,0 +1,68 @@
+import Phaser from 'phaser';
+import { BootScene } from './scenes/BootScene.ts';
+import { GameScene } from './scenes/GameScene.ts';
+import { VictoryScene } from './scenes/VictoryScene.ts';
+import { COLORS } from './config.ts';
+
+// ─── Responsive canvas sizing ─────────────────────────────────────────────────
+function getGameSize(): { width: number; height: number } {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  return { width: w, height: h };
+}
+
+const { width, height } = getGameSize();
+
+// ─── Phaser Game config ───────────────────────────────────────────────────────
+const config: Phaser.Types.Core.GameConfig = {
+  type: Phaser.AUTO,
+  width,
+  height,
+  backgroundColor: '#' + COLORS.bgDeep.toString(16).padStart(6, '0'),
+  parent: 'game-container',
+  scene: [BootScene, GameScene, VictoryScene],
+  scale: {
+    mode: Phaser.Scale.RESIZE,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
+  roundPixels: true,
+  input: {
+    activePointers: 3,
+  },
+  render: {
+    antialias: true,
+    pixelArt: false,
+    roundPixels: true,
+  },
+};
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────
+const game = new Phaser.Game(config);
+
+// Prevent context menu and touch bounce on mobile
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('touchmove', e => {
+  const scale = (e as unknown as { scale?: number }).scale;
+  if (scale !== undefined && scale !== 1) e.preventDefault();
+}, { passive: false });
+
+// ─── Platform Hooks (Telegram, YouTube Playables) ────────────────────────────
+try {
+  // Telegram Mini App
+  const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;
+  if (tg) {
+    tg.ready?.();
+    tg.expand?.();
+    tg.setHeaderColor?.('#0a0f2e');
+    tg.setBackgroundColor?.('#0a0f2e');
+  }
+
+  // YouTube Playables
+  const yt = (window as unknown as { YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void } }).YT_PLAYABLES;
+  if (yt?.firstFrameReady) yt.firstFrameReady();
+  if (yt?.gameReady) yt.gameReady();
+} catch (_) {
+  // Graceful silent fallback
+}
+
+export default game;
