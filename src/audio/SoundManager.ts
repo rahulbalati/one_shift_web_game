@@ -25,6 +25,7 @@ const CHORD_DURATION = 3.6; // seconds per chord
 class SoundManager {
   private ctx: AudioContext | null = null;
   private muted: boolean = false;
+  private sdkMuted: boolean = false;
   private bgmPlaying: boolean = false;
   private bgmChordStep: number = 0;
   private bgmTimeoutId: number | null = null;
@@ -48,31 +49,40 @@ class SoundManager {
 
   resume() {
     this.initCtx();
-    if (!this.muted && !this.bgmPlaying) {
+    if (!this.isMuted() && !this.bgmPlaying) {
+      this.startBGM();
+    }
+  }
+
+  setSdkMute(muted: boolean) {
+    this.sdkMuted = muted;
+    if (this.sdkMuted) {
+      this.stopBGM();
+    } else if (!this.muted && !this.bgmPlaying) {
       this.startBGM();
     }
   }
 
   isMuted(): boolean {
-    return this.muted;
+    return this.muted || this.sdkMuted;
   }
 
   toggleMute(): boolean {
     this.muted = !this.muted;
     localStorage.setItem('oneshift_muted', String(this.muted));
-    if (!this.muted) {
+    if (!this.isMuted()) {
       this.initCtx();
       this.playClick();
       this.startBGM();
     } else {
       this.stopBGM();
     }
-    return this.muted;
+    return this.isMuted();
   }
 
   // ─── Procedural Lo-Fi Ambient BGM ───────────────────────────────────────────
   startBGM() {
-    if (this.muted || this.bgmPlaying) return;
+    if (this.isMuted() || this.bgmPlaying) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -153,7 +163,7 @@ class SoundManager {
 
   // ─── SFX: Button Click ──────────────────────────────────────────────────────
   playClick() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -176,7 +186,7 @@ class SoundManager {
 
   // ─── SFX: Tile Shift Whoosh ─────────────────────────────────────────────────
   playSlide() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -201,7 +211,7 @@ class SoundManager {
 
   // ─── SFX: Tile Solved Chime ─────────────────────────────────────────────────
   playTileSolved() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -225,7 +235,7 @@ class SoundManager {
 
   // ─── SFX: Victory Fanfare Chord ─────────────────────────────────────────────
   playVictory() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -255,7 +265,7 @@ class SoundManager {
 
   // ─── SFX: Low Time Ticking ──────────────────────────────────────────────────
   playTimeWarning() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -279,7 +289,7 @@ class SoundManager {
 
   // ─── SFX: Time's Up Buzzer ──────────────────────────────────────────────────
   playTimeUp() {
-    if (this.muted) return;
+    if (this.isMuted()) return;
     this.initCtx();
     if (!this.ctx) return;
 

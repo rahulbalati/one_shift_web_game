@@ -357,7 +357,7 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5, 0);
 
     // Level display with navigation arrows
-    const maxUnlocked = parseInt(localStorage.getItem('oneshift_max_unlocked') || '1', 10);
+    const maxUnlocked = parseInt(crazyGames.getItem('oneshift_max_unlocked') || '1', 10);
     const canPrev = this.level > 1;
     const canNext = this.level < maxUnlocked;
 
@@ -428,8 +428,8 @@ export class GameScene extends Phaser.Scene {
       color: '#' + COLORS.text.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
 
-    // Best (persisted in localStorage per level)
-    const savedBest = localStorage.getItem('oneshift_best_lvl_' + this.level);
+    // Best (persisted in CrazyGames Data Module / localStorage per level)
+    const savedBest = crazyGames.getItem('oneshift_best_lvl_' + this.level);
     const bestVal = savedBest ? parseInt(savedBest, 10) : (bestMoves[this.level] ?? null);
 
     this.createText(cx + statSpan, statY, 'BEST', {
@@ -1194,7 +1194,7 @@ export class GameScene extends Phaser.Scene {
   private goToLevel(lvl: number) {
     if (this.animating) return;
     try {
-      localStorage.setItem('oneshift_current_level', String(lvl));
+      crazyGames.setItem('oneshift_current_level', String(lvl));
     } catch (_) {}
     this.scene.restart({ level: lvl });
   }
@@ -1213,13 +1213,13 @@ export class GameScene extends Phaser.Scene {
     const elapsed = this.getElapsedSeconds();
 
     // Persistent best score tracking
-    const currentBest = localStorage.getItem('oneshift_best_lvl_' + this.level);
+    const currentBest = crazyGames.getItem('oneshift_best_lvl_' + this.level);
     const parsedBest = currentBest ? parseInt(currentBest, 10) : null;
     let newBest = parsedBest;
     if (parsedBest === null || this.moveCount < parsedBest) {
       newBest = this.moveCount;
       try {
-        localStorage.setItem('oneshift_best_lvl_' + this.level, String(this.moveCount));
+        crazyGames.setItem('oneshift_best_lvl_' + this.level, String(this.moveCount));
       } catch (_) {}
       if (this.bestText) {
         this.bestText.setText(String(this.moveCount));

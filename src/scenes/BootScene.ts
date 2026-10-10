@@ -59,7 +59,7 @@ export class BootScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     // Progressive auto-save: load highest level reached
-    const savedLevel = parseInt(localStorage.getItem('oneshift_current_level') || '1', 10);
+    const savedLevel = parseInt(crazyGames.getItem('oneshift_current_level') || '1', 10);
     const startLevel = isNaN(savedLevel) || savedLevel < 1 ? 1 : savedLevel;
     const btnLabel = startLevel > 1 ? `▶ Resume Level ${startLevel}` : '▶ Tap to Play';
 
