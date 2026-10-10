@@ -68,6 +68,13 @@ export class GameScene extends Phaser.Scene {
   // Scale tracking
   private scaleFactor = 1;
 
+  // Swipe / Drag controls
+  private swipeStartX = 0;
+  private swipeStartY = 0;
+  private swipeRow = -1;
+  private swipeCol = -1;
+  private isSwiping = false;
+
   constructor() {
     super({ key: SCENE.GAME });
   }
@@ -97,6 +104,7 @@ export class GameScene extends Phaser.Scene {
     this.createHowToOverlay();
     this.createSelectionIndicator();
     this.setupKeyboard();
+    this.setupSwipeControls();
     this.setupVisibilityHandling();
     this.startTimer();
 
@@ -167,6 +175,14 @@ export class GameScene extends Phaser.Scene {
     card.lineStyle(1.5, COLORS.panelBorder, 0.8);
     card.strokeRoundedRect(gridX - pad, gridY - pad,
       GRID_TOTAL * sf + pad * 2, GRID_TOTAL * sf + pad * 2, 14 * sf);
+
+    // Interactive hand cursor zone across the board
+    this.add.zone(
+      gridX + (GRID_TOTAL * sf) / 2,
+      gridY + (GRID_TOTAL * sf) / 2,
+      GRID_TOTAL * sf,
+      GRID_TOTAL * sf,
+    ).setInteractive({ useHandCursor: true });
 
     this.tileSprites = [];
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
@@ -529,6 +545,64 @@ export class GameScene extends Phaser.Scene {
         case 'KeyZ': this.doUndo(); break;
         case 'KeyR': this.doRestart(); break;
         case 'KeyP': this.togglePause(); break;
+      }
+    });
+  }
+
+  // ─── Swipe & Drag controls ──────────────────────────────────────────────────
+  private setupSwipeControls() {
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      if (this.animating || this.paused) return;
+      if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
+
+      const sf = this.scaleFactor;
+      const tileSize = TILE_SIZE * sf;
+      const tileGap  = TILE_GAP  * sf;
+      const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
+      const gridY    = GRID_Y * sf;
+      const step     = tileSize + tileGap;
+
+      // Check if pointer is within grid bounds
+      const relX = pointer.x - gridX;
+      const relY = pointer.y - gridY;
+      const gridSpan = GRID_TOTAL * sf;
+
+      if (relX >= 0 && relX <= gridSpan && relY >= 0 && relY <= gridSpan) {
+        const c = Math.floor(relX / step);
+        const r = Math.floor(relY / step);
+        if (c >= 0 && c < GRID_SIZE && r >= 0 && r < GRID_SIZE) {
+          this.swipeStartX = pointer.x;
+          this.swipeStartY = pointer.y;
+          this.swipeRow = r;
+          this.swipeCol = c;
+          this.isSwiping = true;
+        }
+      }
+    });
+
+    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      if (!this.isSwiping) return;
+      this.isSwiping = false;
+
+      if (this.animating || this.paused) return;
+
+      const dx = pointer.x - this.swipeStartX;
+      const dy = pointer.y - this.swipeStartY;
+      const sf = this.scaleFactor;
+      const minDistance = 18 * sf;
+
+      if (Math.abs(dx) < minDistance && Math.abs(dy) < minDistance) {
+        return; // Small tap, ignore
+      }
+
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        // Horizontal swipe along this.swipeRow
+        const dir: ShiftDirection = dx > 0 ? 'right' : 'left';
+        this.doShift('row', this.swipeRow, dir);
+      } else {
+        // Vertical swipe along this.swipeCol
+        const dir: ShiftDirection = dy > 0 ? 'down' : 'up';
+        this.doShift('col', this.swipeCol, dir);
       }
     });
   }
