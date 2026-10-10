@@ -11,6 +11,7 @@ import { scramble } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
 import { sounds } from '../audio/SoundManager.ts';
+import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface TileSprite {
@@ -112,6 +113,7 @@ export class GameScene extends Phaser.Scene {
     this.setupVisibilityHandling();
     this.createTutorialHint();
     this.startTimer();
+    crazyGames.gameplayStart();
 
     // Handle resize
     this.scale.on('resize', this.onResize, this);
@@ -943,6 +945,8 @@ export class GameScene extends Phaser.Scene {
 
   private onVictory() {
     sounds.playVictory();
+    crazyGames.happytime();
+    crazyGames.gameplayStop();
     this.timerEvent.remove();
     const elapsed = this.getElapsedSeconds();
 
@@ -979,9 +983,11 @@ export class GameScene extends Phaser.Scene {
     this.paused = !this.paused;
     this.pauseOverlay.setVisible(this.paused);
     if (this.paused) {
+      crazyGames.gameplayStop();
       this.pausedAt = Date.now();
       (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('▶ Resume');
     } else {
+      crazyGames.gameplayStart();
       this.totalPauseMs += Date.now() - this.pausedAt;
       (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('⏸ Pause');
     }

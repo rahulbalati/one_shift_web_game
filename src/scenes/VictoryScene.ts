@@ -6,6 +6,7 @@ import {
 } from '../config.ts';
 import type { VictoryData } from '../types.ts';
 import { sounds } from '../audio/SoundManager.ts';
+import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
 
 export class VictoryScene extends Phaser.Scene {
   private victoryData!: VictoryData;
@@ -174,6 +175,7 @@ export class VictoryScene extends Phaser.Scene {
     });
     nextBtn.on('pointerup', () => {
       sounds.playClick();
+      crazyGames.gameplayStart();
       this.nextLevel();
     });
 

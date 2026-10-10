@@ -3,6 +3,7 @@ import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
 import { VictoryScene } from './scenes/VictoryScene.ts';
 import { COLORS } from './config.ts';
+import { crazyGames } from './sdk/CrazyGamesSDK.ts';
 
 // ─── Responsive canvas sizing ─────────────────────────────────────────────────
 function getGameSize(): { width: number; height: number } {
@@ -46,8 +47,11 @@ document.addEventListener('touchmove', e => {
   if (scale !== undefined && scale !== 1) e.preventDefault();
 }, { passive: false });
 
-// ─── Platform Hooks (Telegram, YouTube Playables) ────────────────────────────
+// ─── Platform Hooks (CrazyGames, Telegram, YouTube Playables) ────────────────
 try {
+  // CrazyGames SDK v3
+  crazyGames.init();
+
   // Telegram Mini App
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;
   if (tg) {
