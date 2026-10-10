@@ -5,6 +5,7 @@ import {
   VICTORY_ANIM_DURATION,
 } from '../config.ts';
 import type { VictoryData } from '../types.ts';
+import { sounds } from '../audio/SoundManager.ts';
 
 export class VictoryScene extends Phaser.Scene {
   private victoryData!: VictoryData;
@@ -140,7 +141,10 @@ export class VictoryScene extends Phaser.Scene {
       btnBg.setFillStyle(COLORS.accent);
       this.tweens.add({ targets: nextBtn, scaleX: 1, scaleY: 1, duration: 80 });
     });
-    nextBtn.on('pointerup', () => this.nextLevel());
+    nextBtn.on('pointerup', () => {
+      sounds.playClick();
+      this.nextLevel();
+    });
 
     // Also allow keyboard Enter/Space
     if (this.input.keyboard) {

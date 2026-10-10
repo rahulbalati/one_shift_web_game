@@ -10,6 +10,7 @@ import { cloneBoard, applyMove, isSolved } from '../game/Board.ts';
 import { scramble } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
+import { sounds } from '../audio/SoundManager.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface TileSprite {
@@ -285,6 +286,7 @@ export class GameScene extends Phaser.Scene {
       this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 80 });
     });
     container.on('pointerdown', () => {
+      sounds.playClick();
       this.tweens.add({ targets: container, scaleX: 0.9, scaleY: 0.9, duration: 60 });
     });
     container.on('pointerup', () => {
@@ -350,6 +352,16 @@ export class GameScene extends Phaser.Scene {
       fontStyle: 'bold',
       color: '#' + COLORS.textAccent.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
+
+    // Audio Mute / Unmute Button
+    const muteIcon = this.createText(this.scale.width - 28 * sf, 26 * sf, sounds.isMuted() ? '🔇' : '🔊', {
+      fontSize: `${Math.round(20 * sf)}px`,
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    muteIcon.on('pointerdown', () => {
+      const isMuted = sounds.toggleMute();
+      muteIcon.setText(isMuted ? '🔇' : '🔊');
+    });
   }
 
   // ─── Control buttons (Undo, Restart, New Game, Pause, How To) ───────────────
@@ -413,7 +425,10 @@ export class GameScene extends Phaser.Scene {
       bg.setFillStyle(bgColor);
       this.tweens.add({ targets: c, scaleX: 1, scaleY: 1, duration: 80 });
     });
-    c.on('pointerdown', () => this.tweens.add({ targets: c, scaleX: 0.94, scaleY: 0.94, duration: 60 }));
+    c.on('pointerdown', () => {
+      sounds.playClick();
+      this.tweens.add({ targets: c, scaleX: 0.94, scaleY: 0.94, duration: 60 });
+    });
     c.on('pointerup',   () => this.tweens.add({ targets: c, scaleX: 1,    scaleY: 1,    duration: 80 }));
 
     return c;
@@ -638,6 +653,7 @@ export class GameScene extends Phaser.Scene {
     const move: MoveRecord = { type, index, direction };
     const newBoard = applyMove(this.board, move);
 
+    sounds.playSlide();
     this.animating = true;
     this.animateShift(type, index, direction, newBoard, () => {
       this.board = newBoard;
@@ -832,6 +848,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onVictory() {
+    sounds.playVictory();
     this.timerEvent.remove();
     const elapsed = this.getElapsedSeconds();
 
