@@ -85,16 +85,31 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
-  init(data: { level?: number } = {}) {
+  init(data: {
+    level?: number;
+    board?: Board;
+    scrambledBoard?: Board;
+    moveHistory?: MoveRecord[];
+    moveCount?: number;
+    startTime?: number;
+    totalPauseMs?: number;
+  } = {}) {
     this.level = data.level ?? 1;
-    this.moveCount = 0;
-    this.moveHistory = [];
+    this.moveCount = data.moveCount ?? 0;
+    this.moveHistory = data.moveHistory ? [...data.moveHistory] : [];
+    this.startTime = data.startTime ?? 0;
+    this.totalPauseMs = data.totalPauseMs ?? 0;
     this.paused = false;
-    this.totalPauseMs = 0;
     this.animating = false;
     this.keyboardMode = false;
     this.selectedRow = 0;
     this.selectedCol = 0;
+    if (data.board) {
+      this.board = cloneBoard(data.board);
+    }
+    if (data.scrambledBoard) {
+      this.scrambledBoard = cloneBoard(data.scrambledBoard);
+    }
   }
 
   create() {
@@ -115,8 +130,12 @@ export class GameScene extends Phaser.Scene {
     this.startTimer();
     crazyGames.gameplayStart();
 
-    // Handle resize
+    // Handle responsive resize without losing board state
     this.scale.on('resize', this.onResize, this);
+    this.events.once('shutdown', () => {
+      this.scale.off('resize', this.onResize, this);
+      this.timerEvent?.remove();
+    });
   }
 
   private computeScale() {
@@ -128,6 +147,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private generatePuzzle() {
+    if (this.board && this.scrambledBoard) {
+      return; // Board preserved across resize / orientation change
+    }
     if (this.level === 1) {
       // Deterministic 1-move tutorial: Row 0 shifted right by 1
       // Player shifts Row 0 left to immediately win!
@@ -718,7 +740,10 @@ export class GameScene extends Phaser.Scene {
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
   private startTimer() {
-    this.startTime = Date.now();
+    if (!this.startTime) {
+      this.startTime = Date.now();
+    }
+    this.updateTimer();
     this.timerEvent = this.time.addEvent({
       delay: 500,
       callback: this.updateTimer,
@@ -759,6 +784,32 @@ export class GameScene extends Phaser.Scene {
       this.snapTilesToBoard();
       this.refreshTileColors();
       this.animating = false;
+
+      // Game Juice: subtle tactile impact shake
+      this.cameras.main.shake(50, 0.002);
+
+      // Pulse and chime for placed solved tiles
+      let hasSolved = false;
+      for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+        const val = this.board[i];
+        if (val === i + 1) {
+          const sprite = this.tileSprites.find(s => s.value === val);
+          if (sprite) {
+            this.tweens.add({
+              targets: sprite.container,
+              scaleX: 1.05,
+              scaleY: 1.05,
+              duration: 90,
+              yoyo: true,
+              ease: 'Sine.InOut',
+            });
+            hasSolved = true;
+          }
+        }
+      }
+      if (hasSolved) {
+        sounds.playTileSolved();
+      }
 
       if (isSolved(this.board)) {
         this.onVictory();
@@ -897,13 +948,21 @@ export class GameScene extends Phaser.Scene {
       const sprite = this.tileSprites.find(s => s.value === value);
       if (sprite) {
         const inPlace = value === i + 1;
-        sprite.bg.setFillStyle(inPlace ? COLORS.tileSolved : COLORS.tile);
-        sprite.label.setStyle({
-          color: inPlace
-            ? '#' + COLORS.tileSolvedTxt.toString(16).padStart(6, '0')
-            : '#' + COLORS.tileText.toString(16).padStart(6, '0'),
-          resolution: dpr,
-        });
+        if (inPlace) {
+          sprite.bg.setFillStyle(0x0e3f44);
+          sprite.bg.setStrokeStyle(2, 0x00ffcc);
+          sprite.label.setStyle({
+            color: '#00ffcc',
+            resolution: dpr,
+          });
+        } else {
+          sprite.bg.setFillStyle(COLORS.tile);
+          sprite.bg.setStrokeStyle(1.5, COLORS.panelBorder);
+          sprite.label.setStyle({
+            color: '#' + COLORS.tileText.toString(16).padStart(6, '0'),
+            resolution: dpr,
+          });
+        }
       }
     }
   }
@@ -1009,16 +1068,29 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private onVisibilityChange = () => {
+    if (document.hidden && !this.paused) {
+      this.togglePause();
+    }
+  };
+
   private setupVisibilityHandling() {
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden && !this.paused) {
-        this.togglePause();
-      }
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    this.events.once('shutdown', () => {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange);
     });
   }
 
   private onResize() {
-    this.scene.restart({ level: this.level });
+    this.scene.restart({
+      level: this.level,
+      board: this.board,
+      scrambledBoard: this.scrambledBoard,
+      moveHistory: this.moveHistory,
+      moveCount: this.moveCount,
+      startTime: this.startTime,
+      totalPauseMs: this.totalPauseMs,
+    });
   }
 
   update() {

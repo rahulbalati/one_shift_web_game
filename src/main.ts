@@ -51,6 +51,7 @@ document.addEventListener('touchmove', e => {
 try {
   // CrazyGames SDK v3
   crazyGames.init();
+  crazyGames.loadingStart();
 
   // Telegram Mini App
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;

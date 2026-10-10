@@ -21,6 +21,10 @@ class SoundManager {
     }
   }
 
+  resume() {
+    this.initCtx();
+  }
+
   isMuted(): boolean {
     return this.muted;
   }

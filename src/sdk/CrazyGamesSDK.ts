@@ -4,6 +4,8 @@
 interface CrazyGamesSDKInterface {
   init: () => Promise<void>;
   game: {
+    loadingStart: () => void;
+    loadingStop: () => void;
     gameplayStart: () => void;
     gameplayStop: () => void;
     happytime: () => void;
@@ -32,6 +34,18 @@ class CrazyGamesBridge {
     } catch (_) {
       // Graceful fallback if offline or running outside CrazyGames
     }
+  }
+
+  loadingStart(): void {
+    try {
+      window.CrazyGames?.SDK?.game?.loadingStart();
+    } catch (_) {}
+  }
+
+  loadingStop(): void {
+    try {
+      window.CrazyGames?.SDK?.game?.loadingStop();
+    } catch (_) {}
   }
 
   gameplayStart(): void {
