@@ -21,6 +21,11 @@ export class VictoryScene extends Phaser.Scene {
   }
 
   create() {
+    const nextLvl = this.victoryData.level + 1;
+    try {
+      localStorage.setItem('oneshift_current_level', String(nextLvl));
+    } catch (_) {}
+
     const { width, height } = this.scale;
     const sf = Math.min(width / BASE_WIDTH, height / BASE_HEIGHT, 1.4);
     this.scaleFactor = sf;

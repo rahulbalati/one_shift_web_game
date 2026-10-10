@@ -21,26 +21,50 @@ export interface ScrambleResult {
 }
 
 /**
+ * Level countdown balancing blueprint:
+ * Level 1: 45s
+ * Level 2 - 3: 40s
+ * Level 4 - 6: 35s
+ * Level 7 - 10: 30s
+ * Level 11+: 25s
+ */
+export function getLevelTimeLimit(level: number): number {
+  if (level === 1) return 45;
+  if (level <= 3) return 40;
+  if (level <= 6) return 35;
+  if (level <= 10) return 30;
+  return 25;
+}
+
+export function getParMoves(level: number): number {
+  if (level === 1) return 1;
+  if (level === 2) return 2;
+  if (level === 3) return 3;
+  if (level <= 6) return level;
+  if (level <= 10) return level + 1;
+  return Math.min(12, MAX_SCRAMBLE_MOVES);
+}
+
+/**
  * Scramble the board by applying `count` random legal row/col shifts.
  * Consecutive opposite moves are avoided to keep the puzzle meaningful.
  * Guaranteed solvable (reverse the `moves` array with opposing directions).
  * Guaranteed to not produce a solved board (retry if unlucky).
  */
 export function scramble(level: number): ScrambleResult {
-  // Gentle onboarding curve for CrazyGames best practices
   let count: number;
   if (level === 1) {
-    count = 1; // 1-move tutorial solve
+    count = 1;
   } else if (level === 2) {
-    count = 2; // 2-move combo solve
+    count = 2;
   } else if (level === 3) {
     count = 3;
-  } else if (level === 4) {
-    count = 5;
-  } else if (level === 5) {
-    count = 8;
+  } else if (level <= 6) {
+    count = level; // 4, 5, 6 moves
+  } else if (level <= 10) {
+    count = 6 + (level - 6); // 7, 8, 9, 10 moves
   } else {
-    count = Math.min(10 + (level - 6) * 3, MAX_SCRAMBLE_MOVES);
+    count = Math.min(10 + Math.floor((level - 10) * 0.8), MAX_SCRAMBLE_MOVES);
   }
 
   let attempts = 0;

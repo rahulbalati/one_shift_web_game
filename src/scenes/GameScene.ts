@@ -7,7 +7,7 @@ import {
   SHIFT_ANIM_DURATION,
 } from '../config.ts';
 import { cloneBoard, applyMove, isSolved, solvedBoard } from '../game/Board.ts';
-import { scramble } from '../game/Scrambler.ts';
+import { scramble, getLevelTimeLimit } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
 import { sounds } from '../audio/SoundManager.ts';
@@ -59,7 +59,10 @@ export class GameScene extends Phaser.Scene {
   private howToBtn!: Phaser.GameObjects.Container;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private howToOverlay!: Phaser.GameObjects.Container;
+  private timeUpOverlay!: Phaser.GameObjects.Container;
   private timerEvent!: Phaser.Time.TimerEvent;
+  private timeLimit = 45;
+  private lastTickSecond = -1;
 
   // Keyboard
   private selectedRow = 0;
@@ -93,12 +96,15 @@ export class GameScene extends Phaser.Scene {
     moveCount?: number;
     startTime?: number;
     totalPauseMs?: number;
+    timeLimit?: number;
   } = {}) {
     this.level = data.level ?? 1;
     this.moveCount = data.moveCount ?? 0;
     this.moveHistory = data.moveHistory ? [...data.moveHistory] : [];
     this.startTime = data.startTime ?? 0;
     this.totalPauseMs = data.totalPauseMs ?? 0;
+    this.timeLimit = data.timeLimit ?? getLevelTimeLimit(this.level);
+    this.lastTickSecond = -1;
     this.paused = false;
     this.animating = false;
     this.keyboardMode = false;
@@ -118,6 +124,7 @@ export class GameScene extends Phaser.Scene {
     this.createControlButtons();
     this.createPauseOverlay();
     this.createHowToOverlay();
+    this.createTimeUpOverlay();
     this.createSelectionIndicator();
     this.setupKeyboard();
     this.setupSwipeControls();
@@ -541,6 +548,65 @@ export class GameScene extends Phaser.Scene {
     this.howToOverlay.setDepth(10);
   }
 
+  private createTimeUpOverlay() {
+    const { width, height } = this.scale;
+    const sf = this.scaleFactor;
+    const cx = width / 2;
+    const cy = height / 2;
+
+    const darken = this.add.rectangle(0, 0, width, height, 0x000000, 0.85).setOrigin(0);
+    const panW = Math.min(320 * sf, width - 40 * sf);
+    const panH = 260 * sf;
+    const panel = this.add.rectangle(cx, cy, panW, panH, COLORS.panelBg)
+      .setStrokeStyle(2.5, 0xff4455);
+
+    const icon = this.createText(cx, cy - 65 * sf, '⏳', {
+      fontSize: `${Math.round(42 * sf)}px`,
+    }).setOrigin(0.5);
+
+    const title = this.createText(cx, cy - 12 * sf, "TIME'S UP!", {
+      fontSize: `${Math.round(24 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#ff4455',
+    }).setOrigin(0.5);
+
+    const sub = this.createText(cx, cy + 24 * sf, 'The clock ran out before solving!', {
+      fontSize: `${Math.round(13 * sf)}px`,
+      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
+    }).setOrigin(0.5);
+
+    const btnW = 160 * sf;
+    const btnH = 46 * sf;
+    const btnY = cy + 78 * sf;
+
+    const retryBg = this.add.rectangle(0, 0, btnW, btnH, 0xff4455).setOrigin(0.5);
+    const retryTxt = this.createText(0, 0, '🔄 Try Again', {
+      fontSize: `${Math.round(16 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    const retryBtn = this.add.container(cx, btnY, [retryBg, retryTxt]);
+    retryBtn.setSize(btnW, btnH);
+    retryBtn.setInteractive({ useHandCursor: true });
+
+    const handleRetry = () => {
+      sounds.playClick();
+      this.timeUpOverlay.setVisible(false);
+      this.paused = false;
+      this.doRestart();
+      this.startTimer();
+      crazyGames.gameplayStart();
+    };
+
+    retryBtn.on('pointerdown', handleRetry);
+    retryBtn.on('pointerup', handleRetry);
+
+    this.timeUpOverlay = this.add.container(0, 0, [darken, panel, icon, title, sub, retryBtn]);
+    this.timeUpOverlay.setVisible(false);
+    this.timeUpOverlay.setDepth(25);
+  }
+
   // ─── Keyboard selection indicator ───────────────────────────────────────────
   private createSelectionIndicator() {
     this.selectionIndicator = this.add.graphics();
@@ -734,14 +800,15 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ─── Timer ──────────────────────────────────────────────────────────────────
+  // ─── Countdown Timer ────────────────────────────────────────────────────────
   private startTimer() {
+    this.timeLimit = getLevelTimeLimit(this.level);
     if (!this.startTime) {
       this.startTime = Date.now();
     }
     this.updateTimer();
     this.timerEvent = this.time.addEvent({
-      delay: 500,
+      delay: 250,
       callback: this.updateTimer,
       callbackScope: this,
       loop: true,
@@ -751,9 +818,40 @@ export class GameScene extends Phaser.Scene {
   private updateTimer() {
     if (this.paused) return;
     const elapsed = Math.floor((Date.now() - this.startTime - this.totalPauseMs) / 1000);
-    const m = Math.floor(elapsed / 60);
-    const s = elapsed % 60;
+    const remaining = Math.max(0, this.timeLimit - elapsed);
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
     this.timerText.setText(`${m}:${String(s).padStart(2, '0')}`);
+
+    if (remaining <= 10 && remaining > 0) {
+      this.timerText.setStyle({ color: '#ff4455' });
+      if (this.lastTickSecond !== remaining) {
+        this.lastTickSecond = remaining;
+        sounds.playTimeWarning();
+        this.tweens.add({
+          targets: this.timerText,
+          scaleX: 1.15,
+          scaleY: 1.15,
+          duration: 90,
+          yoyo: true,
+          ease: 'Sine.InOut',
+        });
+      }
+    } else if (remaining > 10) {
+      this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
+    }
+
+    if (remaining <= 0) {
+      this.timerEvent?.remove();
+      this.onTimeUp();
+    }
+  }
+
+  private onTimeUp() {
+    this.paused = true;
+    sounds.playTimeUp();
+    crazyGames.gameplayStop();
+    this.timeUpOverlay.setVisible(true);
   }
 
   private getElapsedSeconds(): number {
@@ -987,8 +1085,9 @@ export class GameScene extends Phaser.Scene {
     this.moveHistory = [];
     this.startTime = Date.now();
     this.totalPauseMs = 0;
+    this.lastTickSecond = -1;
     this.movesText.setText('0');
-    this.timerText.setText('0:00');
+    this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
     this.snapTilesToBoard();
     this.refreshTileColors();
   }
@@ -1086,6 +1185,7 @@ export class GameScene extends Phaser.Scene {
       moveCount: this.moveCount,
       startTime: this.startTime,
       totalPauseMs: this.totalPauseMs,
+      timeLimit: this.timeLimit,
     });
   }
 

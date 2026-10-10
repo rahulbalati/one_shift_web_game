@@ -58,8 +58,13 @@ export class BootScene extends Phaser.Scene {
       color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
     }).setOrigin(0.5);
 
+    // Progressive auto-save: load highest level reached
+    const savedLevel = parseInt(localStorage.getItem('oneshift_current_level') || '1', 10);
+    const startLevel = isNaN(savedLevel) || savedLevel < 1 ? 1 : savedLevel;
+    const btnLabel = startLevel > 1 ? `▶ Resume Level ${startLevel}` : '▶ Tap to Play';
+
     // 1-Click to Play prompt (active immediately from frame 0)
-    const playBtn = this.add.text(cx, cy + 85 * sf, '▶ Tap to Play', {
+    const playBtn = this.add.text(cx, cy + 85 * sf, btnLabel, {
       fontSize: `${Math.round(18 * sf)}px`,
       fontFamily: font,
       fontStyle: 'bold',
@@ -84,7 +89,7 @@ export class BootScene extends Phaser.Scene {
       sounds.resume();
       this.input.off('pointerdown', startGame);
       if (this.input.keyboard) this.input.keyboard.off('keydown', startGame);
-      this.scene.start(SCENE.GAME, { level: 1 });
+      this.scene.start(SCENE.GAME, { level: startLevel });
     };
 
     // Instant 1-click trigger
