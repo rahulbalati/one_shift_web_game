@@ -5,8 +5,9 @@ import {
   VICTORY_ANIM_DURATION,
 } from '../config.ts';
 import type { VictoryData } from '../types.ts';
-import { sounds } from '../audio/SoundManager.ts';
+import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { getParMoves } from '../game/Scrambler.ts';
 
 export class VictoryScene extends Phaser.Scene {
   private victoryData!: VictoryData;
@@ -21,6 +22,7 @@ export class VictoryScene extends Phaser.Scene {
   }
 
   create() {
+    triggerHaptic([40, 60, 40]);
     const lvl = this.victoryData.level;
     const nextLvl = lvl + 1;
     try {
@@ -66,19 +68,12 @@ export class VictoryScene extends Phaser.Scene {
       ease: 'Back.Out',
     });
 
-    // Calculate 3-Star Rating
-    let targetMoves = 1;
-    if (this.victoryData.level === 1) targetMoves = 1;
-    else if (this.victoryData.level === 2) targetMoves = 2;
-    else if (this.victoryData.level === 3) targetMoves = 3;
-    else if (this.victoryData.level === 4) targetMoves = 5;
-    else if (this.victoryData.level === 5) targetMoves = 8;
-    else targetMoves = Math.min(10 + (this.victoryData.level - 6) * 3, 40);
-
+    // Calculate 3-Star Rating using Par
+    const par = getParMoves(this.victoryData.level);
     let earnedStars = 1;
-    if (this.victoryData.moves <= targetMoves) {
+    if (this.victoryData.moves <= par) {
       earnedStars = 3;
-    } else if (this.victoryData.moves <= Math.ceil(targetMoves * 1.5)) {
+    } else if (this.victoryData.moves <= par + 2) {
       earnedStars = 2;
     }
 

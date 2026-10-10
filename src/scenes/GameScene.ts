@@ -1,16 +1,16 @@
 import Phaser from 'phaser';
 import {
-  BASE_WIDTH, BASE_HEIGHT,
+  BASE_HEIGHT,
   GRID_SIZE, TILE_SIZE, TILE_GAP, GRID_TOTAL, GRID_Y,
   ARROW_SIZE, ARROW_MARGIN,
   COLORS, SCENE,
   SHIFT_ANIM_DURATION,
 } from '../config.ts';
 import { cloneBoard, applyMove, isSolved, solvedBoard } from '../game/Board.ts';
-import { scramble, getLevelTimeLimit } from '../game/Scrambler.ts';
+import { scramble, getLevelTimeLimit, getParMoves } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
-import { sounds } from '../audio/SoundManager.ts';
+import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -53,6 +53,7 @@ export class GameScene extends Phaser.Scene {
   private timerText!: Phaser.GameObjects.Text;
   private movesText!: Phaser.GameObjects.Text;
   private bestText!: Phaser.GameObjects.Text;
+  private parStarsText!: Phaser.GameObjects.Text;
   private undoBtn!: Phaser.GameObjects.Container;
   private restartBtn!: Phaser.GameObjects.Container;
   private newGameBtn!: Phaser.GameObjects.Container;
@@ -83,6 +84,7 @@ export class GameScene extends Phaser.Scene {
   private swipeRow = -1;
   private swipeCol = -1;
   private isSwiping = false;
+  private activePointerId: number | null = null;
 
   constructor() {
     super({ key: SCENE.GAME });
@@ -145,9 +147,11 @@ export class GameScene extends Phaser.Scene {
   private computeScale() {
     const { width, height } = this.scale;
     // Fit into available space maintaining aspect ratio
-    const sx = width / BASE_WIDTH;
-    const sy = height / BASE_HEIGHT;
-    this.scaleFactor = Math.min(sx, sy, 1.4); // allow slight upscale on desktop
+    // Total footprint: GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + safety edge margins (24px)
+    const neededWidth = GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + 24; // 334 + 112 + 24 = 470
+    const sx = width / neededWidth;
+    const sy = height / (BASE_HEIGHT + 20);
+    this.scaleFactor = Math.min(sx, sy, 1.3); // Safe scaling for all screens down to 320px
   }
 
   private generatePuzzle() {
@@ -312,7 +316,8 @@ export class GameScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     const container = this.add.container(x, y, [bg, icon]);
-    container.setSize(size, size);
+    const touchSize = Math.max(size, 44);
+    container.setSize(touchSize, touchSize);
     container.setInteractive({ useHandCursor: true });
 
     // Hover effects
@@ -345,8 +350,8 @@ export class GameScene extends Phaser.Scene {
     const cx = this.scale.width / 2;
 
     // Title
-    this.createText(cx, 18 * sf, 'ONE SHIFT', {
-      fontSize: `${Math.round(28 * sf)}px`,
+    this.createText(cx, 16 * sf, 'ONE SHIFT', {
+      fontSize: `${Math.round(26 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
@@ -356,14 +361,14 @@ export class GameScene extends Phaser.Scene {
     const canPrev = this.level > 1;
     const canNext = this.level < maxUnlocked;
 
-    this.createText(cx, 54 * sf, `Level ${this.level}`, {
+    this.createText(cx, 48 * sf, `Level ${this.level}`, {
       fontSize: `${Math.round(15 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.text.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
 
     // Prev Level Arrow (◀)
-    const prevBtn = this.createText(cx - 58 * sf, 54 * sf, '◀', {
+    const prevBtn = this.createText(cx - 58 * sf, 48 * sf, '◀', {
       fontSize: `${Math.round(15 * sf)}px`,
       color: canPrev ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
     }).setOrigin(0.5, 0);
@@ -377,7 +382,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Next Level Arrow (▶)
-    const nextBtn = this.createText(cx + 58 * sf, 54 * sf, '▶', {
+    const nextBtn = this.createText(cx + 58 * sf, 48 * sf, '▶', {
       fontSize: `${Math.round(15 * sf)}px`,
       color: canNext ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
     }).setOrigin(0.5, 0);
@@ -390,8 +395,15 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
+    // Par & Dynamic Star Meter
+    this.parStarsText = this.createText(cx, 70 * sf, this.getParStarsString(), {
+      fontSize: `${Math.round(13 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#f5a623',
+    }).setOrigin(0.5, 0);
+
     // Stats row
-    const statY = 76 * sf;
+    const statY = 94 * sf;
     const statSpan = 140 * sf;
 
     // Moves
@@ -439,6 +451,30 @@ export class GameScene extends Phaser.Scene {
       const isMuted = sounds.toggleMute();
       muteIcon.setText(isMuted ? '🔇' : '🔊');
     });
+  }
+
+  private getParStarsString(): string {
+    const par = getParMoves(this.level);
+    let stars = '★★★';
+    if (this.moveCount > par + 2) {
+      stars = '★☆☆';
+    } else if (this.moveCount > par) {
+      stars = '★★☆';
+    }
+    return `PAR: ${par}  |  ${stars}`;
+  }
+
+  private updateParStars() {
+    if (!this.parStarsText) return;
+    this.parStarsText.setText(this.getParStarsString());
+    const par = getParMoves(this.level);
+    if (this.moveCount <= par) {
+      this.parStarsText.setStyle({ color: '#f5a623' });
+    } else if (this.moveCount <= par + 2) {
+      this.parStarsText.setStyle({ color: '#d4af37' });
+    } else {
+      this.parStarsText.setStyle({ color: '#8899aa' });
+    }
   }
 
   // ─── Control buttons (Undo, Restart, New Game, Pause, How To) ───────────────
@@ -705,6 +741,7 @@ export class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (this.animating || this.paused) return;
       if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
+      if (this.activePointerId !== null) return; // Ignore multi-touch secondary fingers
 
       const sf = this.scaleFactor;
       const tileSize = TILE_SIZE * sf;
@@ -712,35 +749,39 @@ export class GameScene extends Phaser.Scene {
       const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
       const gridY    = GRID_Y * sf;
       const step     = tileSize + tileGap;
-
-      // Check if pointer is within grid bounds
-      const relX = pointer.x - gridX;
-      const relY = pointer.y - gridY;
       const gridSpan = GRID_TOTAL * sf;
 
-      if (relX >= 0 && relX <= gridSpan && relY >= 0 && relY <= gridSpan) {
-        const c = Math.floor(relX / step);
-        const r = Math.floor(relY / step);
-        if (c >= 0 && c < GRID_SIZE && r >= 0 && r < GRID_SIZE) {
-          this.swipeStartX = pointer.x;
-          this.swipeStartY = pointer.y;
-          this.swipeRow = r;
-          this.swipeCol = c;
-          this.isSwiping = true;
-        }
+      // Generous edge-to-edge hitbox margin (+14px) so outer thumb swipes never fail
+      const hitMargin = 14 * sf;
+      const relX = pointer.x - gridX;
+      const relY = pointer.y - gridY;
+
+      if (relX >= -hitMargin && relX <= gridSpan + hitMargin &&
+          relY >= -hitMargin && relY <= gridSpan + hitMargin) {
+        // Clamp row and column so finger hitting outer border is recognized reliably
+        const c = Phaser.Math.Clamp(Math.floor(relX / step), 0, GRID_SIZE - 1);
+        const r = Phaser.Math.Clamp(Math.floor(relY / step), 0, GRID_SIZE - 1);
+
+        this.activePointerId = pointer.id;
+        this.swipeStartX = pointer.x;
+        this.swipeStartY = pointer.y;
+        this.swipeRow = r;
+        this.swipeCol = c;
+        this.isSwiping = true;
       }
     });
 
-    this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-      if (!this.isSwiping) return;
+    const handlePointerEnd = (pointer: Phaser.Input.Pointer) => {
+      if (!this.isSwiping || pointer.id !== this.activePointerId) return;
       this.isSwiping = false;
+      this.activePointerId = null;
 
       if (this.animating || this.paused) return;
 
       const dx = pointer.x - this.swipeStartX;
       const dy = pointer.y - this.swipeStartY;
       const sf = this.scaleFactor;
-      const minDistance = 18 * sf;
+      const minDistance = 14 * sf; // Highly responsive flick threshold
 
       if (Math.abs(dx) < minDistance && Math.abs(dy) < minDistance) {
         return; // Small tap, ignore
@@ -755,6 +796,20 @@ export class GameScene extends Phaser.Scene {
         const dir: ShiftDirection = dy > 0 ? 'down' : 'up';
         this.doShift('col', this.swipeCol, dir);
       }
+    };
+
+    this.input.on('pointerup', handlePointerEnd);
+    this.input.on('pointerupoutside', handlePointerEnd);
+
+    // Touch-Cancel & Blur protection (prevents stuck / frozen swipe states)
+    this.input.on('pointercancel', () => {
+      this.isSwiping = false;
+      this.activePointerId = null;
+    });
+
+    this.game.events.on('blur', () => {
+      this.isSwiping = false;
+      this.activePointerId = null;
     });
   }
 
@@ -865,6 +920,7 @@ export class GameScene extends Phaser.Scene {
       if (this.lastTickSecond !== remaining) {
         this.lastTickSecond = remaining;
         sounds.playTimeWarning();
+        triggerHaptic(25);
         this.tweens.add({
           targets: this.timerText,
           scaleX: 1.15,
@@ -887,6 +943,7 @@ export class GameScene extends Phaser.Scene {
   private onTimeUp() {
     this.paused = true;
     sounds.playTimeUp();
+    triggerHaptic(40);
     crazyGames.gameplayStop();
     this.timeUpOverlay.setVisible(true);
   }
@@ -912,9 +969,11 @@ export class GameScene extends Phaser.Scene {
       this.moveHistory.push(move);
       this.moveCount++;
       this.movesText.setText(String(this.moveCount));
+      this.updateParStars();
       this.snapTilesToBoard();
       this.refreshTileColors();
       this.animating = false;
+      triggerHaptic(15);
 
       // Game Juice: subtle tactile impact shake
       this.cameras.main.shake(50, 0.002);
@@ -1109,9 +1168,11 @@ export class GameScene extends Phaser.Scene {
       this.board = newBoard;
       this.moveCount = Math.max(0, this.moveCount - 1);
       this.movesText.setText(String(this.moveCount));
+      this.updateParStars();
       this.snapTilesToBoard();
       this.refreshTileColors();
       this.animating = false;
+      triggerHaptic(15);
     });
   }
 
@@ -1124,6 +1185,7 @@ export class GameScene extends Phaser.Scene {
     this.totalPauseMs = 0;
     this.lastTickSecond = -1;
     this.movesText.setText('0');
+    this.updateParStars();
     this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
     this.snapTilesToBoard();
     this.refreshTileColors();
@@ -1144,6 +1206,7 @@ export class GameScene extends Phaser.Scene {
 
   private onVictory() {
     sounds.playVictory();
+    triggerHaptic([40, 60, 40]);
     crazyGames.happytime();
     crazyGames.gameplayStop();
     this.timerEvent?.remove();
@@ -1193,10 +1256,12 @@ export class GameScene extends Phaser.Scene {
     this.paused = !this.paused;
     this.pauseOverlay.setVisible(this.paused);
     if (this.paused) {
+      sounds.stopBGM();
       crazyGames.gameplayStop();
       this.pausedAt = Date.now();
       (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('▶ Resume');
     } else {
+      sounds.startBGM();
       crazyGames.gameplayStart();
       this.totalPauseMs += Date.now() - this.pausedAt;
       (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('⏸ Pause');
@@ -1207,6 +1272,7 @@ export class GameScene extends Phaser.Scene {
     this.howToOverlay.setVisible(true);
     if (!this.paused) {
       this.paused = true;
+      sounds.stopBGM();
       this.pausedAt = Date.now();
     }
   }
@@ -1216,12 +1282,20 @@ export class GameScene extends Phaser.Scene {
     if (this.paused) {
       this.totalPauseMs += Date.now() - this.pausedAt;
       this.paused = false;
+      sounds.startBGM();
     }
   }
 
   private onVisibilityChange = () => {
-    if (document.hidden && !this.paused) {
-      this.togglePause();
+    if (document.hidden) {
+      sounds.stopBGM();
+      if (!this.paused) {
+        this.togglePause();
+      }
+    } else {
+      if (!this.paused && !sounds.isMuted()) {
+        sounds.startBGM();
+      }
     }
   };
 

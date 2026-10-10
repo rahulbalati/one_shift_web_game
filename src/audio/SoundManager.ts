@@ -1,9 +1,34 @@
 // ─── Procedural Web Audio Sound Manager ─────────────────────────────────────
-// Zero-dependency, lightweight, synthesized SFX for ONE SHIFT
+// Zero-dependency, lightweight, 100% synthesized SFX & Lo-Fi ambient BGM for ONE SHIFT
+// Zero external audio files / 0 copyright risk
+
+export function triggerHaptic(pattern: number | number[] = 15) {
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    // Ignored if not supported or disabled by browser
+  }
+}
+
+// 4-chord lo-fi ambient pad cycle: Fmaj7 -> Em7 -> Dm7 -> Cmaj7
+const BGM_CHORDS = [
+  [174.61, 220.00, 261.63, 329.63], // Fmaj7 (F3, A3, C4, E4)
+  [164.81, 196.00, 246.94, 293.66], // Em7 (E3, G3, B3, D4)
+  [146.83, 174.61, 220.00, 261.63], // Dm7 (D3, F3, A3, C4)
+  [130.81, 164.81, 196.00, 246.94], // Cmaj7 (C3, E3, G3, B3)
+];
+
+const CHORD_DURATION = 3.6; // seconds per chord
 
 class SoundManager {
   private ctx: AudioContext | null = null;
   private muted: boolean = false;
+  private bgmPlaying: boolean = false;
+  private bgmChordStep: number = 0;
+  private bgmTimeoutId: number | null = null;
+  private activeBgmNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
 
   constructor() {
     this.muted = localStorage.getItem('oneshift_muted') === 'true';
@@ -23,6 +48,9 @@ class SoundManager {
 
   resume() {
     this.initCtx();
+    if (!this.muted && !this.bgmPlaying) {
+      this.startBGM();
+    }
   }
 
   isMuted(): boolean {
@@ -35,8 +63,92 @@ class SoundManager {
     if (!this.muted) {
       this.initCtx();
       this.playClick();
+      this.startBGM();
+    } else {
+      this.stopBGM();
     }
     return this.muted;
+  }
+
+  // ─── Procedural Lo-Fi Ambient BGM ───────────────────────────────────────────
+  startBGM() {
+    if (this.muted || this.bgmPlaying) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    this.bgmPlaying = true;
+    this.bgmChordStep = 0;
+    this.scheduleChord();
+  }
+
+  stopBGM() {
+    this.bgmPlaying = false;
+    if (this.bgmTimeoutId !== null) {
+      window.clearTimeout(this.bgmTimeoutId);
+      this.bgmTimeoutId = null;
+    }
+    if (this.ctx) {
+      const now = this.ctx.currentTime;
+      for (const node of this.activeBgmNodes) {
+        try {
+          node.gain.gain.cancelScheduledValues(now);
+          node.gain.gain.setValueAtTime(node.gain.gain.value, now);
+          node.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+          node.osc.stop(now + 0.35);
+        } catch (_) {}
+      }
+    }
+    this.activeBgmNodes = [];
+  }
+
+  private scheduleChord() {
+    if (!this.bgmPlaying || this.muted || !this.ctx) return;
+
+    const chord = BGM_CHORDS[this.bgmChordStep % BGM_CHORDS.length];
+    this.bgmChordStep++;
+    const now = this.ctx.currentTime;
+
+    // Filter to give that warm, mellow lo-fi aesthetic
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(540, now);
+    filter.Q.setValueAtTime(0.7, now);
+    filter.connect(this.ctx.destination);
+
+    const newNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
+
+    // Synthesize gentle ambient sine waves with soft attack/decay
+    for (const freq of chord) {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      // Micro detune for lush chorus warmth
+      osc.detune.setValueAtTime((Math.random() - 0.5) * 8, now);
+
+      // Smooth attack -> sustain -> release envelope
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.028, now + 1.2); // Gentle fade in
+      gain.gain.setValueAtTime(0.028, now + CHORD_DURATION - 1.2);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + CHORD_DURATION); // Gentle fade out
+
+      osc.connect(gain);
+      gain.connect(filter);
+
+      osc.start(now);
+      osc.stop(now + CHORD_DURATION + 0.1);
+
+      newNodes.push({ osc, gain });
+    }
+
+    this.activeBgmNodes = newNodes;
+
+    // Schedule next chord with slight overlap
+    this.bgmTimeoutId = window.setTimeout(() => {
+      this.scheduleChord();
+    }, (CHORD_DURATION - 0.4) * 1000);
   }
 
   // ─── SFX: Button Click ──────────────────────────────────────────────────────
