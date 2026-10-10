@@ -6,7 +6,7 @@ import {
   COLORS, SCENE,
   SHIFT_ANIM_DURATION,
 } from '../config.ts';
-import { cloneBoard, applyMove, isSolved } from '../game/Board.ts';
+import { cloneBoard, applyMove, isSolved, solvedBoard } from '../game/Board.ts';
 import { scramble } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
@@ -69,6 +69,9 @@ export class GameScene extends Phaser.Scene {
   // Scale tracking
   private scaleFactor = 1;
 
+  // Tutorial
+  private tutorialContainer: Phaser.GameObjects.Container | null = null;
+
   // Swipe / Drag controls
   private swipeStartX = 0;
   private swipeStartY = 0;
@@ -107,6 +110,7 @@ export class GameScene extends Phaser.Scene {
     this.setupKeyboard();
     this.setupSwipeControls();
     this.setupVisibilityHandling();
+    this.createTutorialHint();
     this.startTimer();
 
     // Handle resize
@@ -122,9 +126,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   private generatePuzzle() {
-    const result = scramble(this.level);
-    this.board = cloneBoard(result.board);
-    this.scrambledBoard = cloneBoard(result.board);
+    if (this.level === 1) {
+      // Deterministic 1-move tutorial: Row 0 shifted right by 1
+      // Player shifts Row 0 left to immediately win!
+      const solved = solvedBoard();
+      const scrambled = applyMove(solved, { type: 'row', index: 0, direction: 'right' });
+      this.board = cloneBoard(scrambled);
+      this.scrambledBoard = cloneBoard(scrambled);
+    } else {
+      const result = scramble(this.level);
+      this.board = cloneBoard(result.board);
+      this.scrambledBoard = cloneBoard(result.board);
+    }
   }
 
   // ─── Background ─────────────────────────────────────────────────────────────
@@ -622,6 +635,85 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // ─── Onboarding Tutorial ────────────────────────────────────────────────────
+  private createTutorialHint() {
+    if (this.level > 2) return;
+
+    const sf = this.scaleFactor;
+    const gridX = (this.scale.width - GRID_TOTAL * sf) / 2;
+    const gridY = GRID_Y * sf;
+    const tileSize = TILE_SIZE * sf;
+
+    const items: Phaser.GameObjects.GameObject[] = [];
+
+    if (this.level === 1) {
+      const bannerY = gridY - 26 * sf;
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 280 * sf, 30 * sf, COLORS.panelBg, 0.95)
+        .setStrokeStyle(1.5, COLORS.accent);
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👈 Swipe Row 1 LEFT to solve!', {
+        fontSize: `${Math.round(13 * sf)}px`,
+        fontStyle: 'bold',
+        color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
+      }).setOrigin(0.5);
+
+      // Animated hand / chevron moving across row 0
+      const rowY = gridY + tileSize / 2;
+      const pointer = this.createText(gridX + GRID_TOTAL * sf - 25 * sf, rowY, '👈', {
+        fontSize: `${Math.round(30 * sf)}px`,
+      }).setOrigin(0.5);
+
+      this.tweens.add({
+        targets: pointer,
+        x: gridX + 35 * sf,
+        duration: 1300,
+        repeat: -1,
+        ease: 'Cubic.InOut',
+      });
+
+      items.push(bannerBg, bannerTxt, pointer);
+    } else if (this.level === 2) {
+      const bannerY = gridY - 26 * sf;
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 280 * sf, 30 * sf, COLORS.panelBg, 0.95)
+        .setStrokeStyle(1.5, COLORS.accent);
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, 'Level 2: 2 shifts to solve!', {
+        fontSize: `${Math.round(13 * sf)}px`,
+        fontStyle: 'bold',
+        color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
+      }).setOrigin(0.5);
+      items.push(bannerBg, bannerTxt);
+    }
+
+    // Skip Tutorial button (meets CrazyGames "make onboarding skippable" requirement)
+    const skipY = GRID_Y * sf + GRID_TOTAL * sf + (ARROW_SIZE + ARROW_MARGIN * 2 + 106) * sf;
+    const skipBtn = this.createText(this.scale.width / 2, skipY, '⏭ Skip Tutorial', {
+      fontSize: `${Math.round(13 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+
+    skipBtn.on('pointerdown', () => {
+      sounds.playClick();
+      this.scene.restart({ level: 3 });
+    });
+
+    items.push(skipBtn);
+    this.tutorialContainer = this.add.container(0, 0, items);
+  }
+
+  private dismissTutorial() {
+    if (this.tutorialContainer) {
+      this.tweens.add({
+        targets: this.tutorialContainer,
+        alpha: 0,
+        duration: 250,
+        onComplete: () => {
+          this.tutorialContainer?.destroy();
+          this.tutorialContainer = null;
+        },
+      });
+    }
+  }
+
   // ─── Timer ──────────────────────────────────────────────────────────────────
   private startTimer() {
     this.startTime = Date.now();
@@ -649,6 +741,8 @@ export class GameScene extends Phaser.Scene {
   doShift(type: 'row' | 'col', index: number, direction: ShiftDirection) {
     if (this.animating || this.paused) return;
     if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
+
+    this.dismissTutorial();
 
     const move: MoveRecord = { type, index, direction };
     const newBoard = applyMove(this.board, move);

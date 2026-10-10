@@ -1,4 +1,4 @@
-import { GRID_SIZE, BASE_SCRAMBLE_MOVES, SCRAMBLE_INCREASE_PER_LEVEL, MAX_SCRAMBLE_MOVES } from '../config.ts';
+import { GRID_SIZE, MAX_SCRAMBLE_MOVES } from '../config.ts';
 import { solvedBoard, applyMove, isSolved } from './Board.ts';
 import type { Board, MoveRecord } from '../types.ts';
 
@@ -27,10 +27,21 @@ export interface ScrambleResult {
  * Guaranteed to not produce a solved board (retry if unlucky).
  */
 export function scramble(level: number): ScrambleResult {
-  const count = Math.min(
-    BASE_SCRAMBLE_MOVES + (level - 1) * SCRAMBLE_INCREASE_PER_LEVEL,
-    MAX_SCRAMBLE_MOVES,
-  );
+  // Gentle onboarding curve for CrazyGames best practices
+  let count: number;
+  if (level === 1) {
+    count = 1; // 1-move tutorial solve
+  } else if (level === 2) {
+    count = 2; // 2-move combo solve
+  } else if (level === 3) {
+    count = 3;
+  } else if (level === 4) {
+    count = 5;
+  } else if (level === 5) {
+    count = 8;
+  } else {
+    count = Math.min(10 + (level - 6) * 3, MAX_SCRAMBLE_MOVES);
+  }
 
   let attempts = 0;
   while (attempts < 100) {
