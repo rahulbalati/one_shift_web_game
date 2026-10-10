@@ -46,22 +46,53 @@ export class VictoryScene extends Phaser.Scene {
       ease: 'Back.Out',
     });
 
-    // Stars / celebration text
-    const stars = this.add.text(panX, panY - 140 * sf, '🎉', {
-      fontSize: `${Math.round(52 * sf)}px`,
-    }).setOrigin(0.5).setAlpha(0);
-    this.tweens.add({ targets: stars, alpha: 1, duration: 400, delay: 300 });
+    // Calculate 3-Star Rating
+    let targetMoves = 1;
+    if (this.victoryData.level === 1) targetMoves = 1;
+    else if (this.victoryData.level === 2) targetMoves = 2;
+    else if (this.victoryData.level === 3) targetMoves = 3;
+    else if (this.victoryData.level === 4) targetMoves = 5;
+    else if (this.victoryData.level === 5) targetMoves = 8;
+    else targetMoves = Math.min(10 + (this.victoryData.level - 6) * 3, 40);
 
-    // Bounce the stars
-    this.tweens.add({
-      targets: stars,
-      y: panY - 150 * sf,
-      duration: 700,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.InOut',
-      delay: 500,
-    });
+    let earnedStars = 1;
+    if (this.victoryData.moves <= targetMoves) {
+      earnedStars = 3;
+    } else if (this.victoryData.moves <= Math.ceil(targetMoves * 1.5)) {
+      earnedStars = 2;
+    }
+
+    const prevStars = parseInt(localStorage.getItem(`oneshift_stars_${this.victoryData.level}`) || '0', 10);
+    if (earnedStars > prevStars) {
+      localStorage.setItem(`oneshift_stars_${this.victoryData.level}`, String(earnedStars));
+    }
+
+    // Render 3 Interactive Animated Stars
+    const starGap = 42 * sf;
+    const starY = panY - 145 * sf;
+    for (let i = 0; i < 3; i++) {
+      const sx = panX + (i - 1) * starGap;
+      const isEarned = i < earnedStars;
+      const starChar = isEarned ? '★' : '☆';
+      const starColor = isEarned ? '#f5a623' : '#334466';
+
+      const star = this.add.text(sx, starY, starChar, {
+        fontSize: `${Math.round(44 * sf)}px`,
+        fontFamily: "'Outfit', 'Plus Jakarta Sans', system-ui, sans-serif",
+        fontStyle: 'bold',
+        color: starColor,
+      }).setOrigin(0.5).setScale(0).setAlpha(0);
+
+      this.tweens.add({
+        targets: star,
+        scaleX: 1,
+        scaleY: 1,
+        alpha: 1,
+        duration: 400,
+        delay: 350 + i * 150,
+        ease: 'Back.Out',
+      });
+    }
 
     const dpr = Math.max(window.devicePixelRatio || 1, 2);
     const font = "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
@@ -79,24 +110,24 @@ export class VictoryScene extends Phaser.Scene {
       return t;
     };
 
-    addText('PUZZLE SOLVED!', -120, 26, COLORS.accent, 350, 'bold');
-    addText(`Level ${this.victoryData.level}`, -82, 15, COLORS.textMuted, 400);
+    addText('PUZZLE SOLVED!', -110, 24, COLORS.accent, 350, 'bold');
+    addText(`Level ${this.victoryData.level}`, -76, 14, COLORS.textMuted, 400);
 
     // Divider
     const div = this.add.graphics().setAlpha(0);
     div.lineStyle(1, COLORS.panelBorder);
-    div.lineBetween(panX - panW / 2 + 20 * sf, panY - 60 * sf, panX + panW / 2 - 20 * sf, panY - 60 * sf);
+    div.lineBetween(panX - panW / 2 + 20 * sf, panY - 55 * sf, panX + panW / 2 - 20 * sf, panY - 55 * sf);
     this.tweens.add({ targets: div, alpha: 1, duration: 300, delay: 450 });
 
-    addText('Moves', -38, 11, COLORS.textMuted, 500);
-    addText(String(this.victoryData.moves), -20, 28, COLORS.text, 550, 'bold');
+    addText('Moves', -34, 11, COLORS.textMuted, 500);
+    addText(String(this.victoryData.moves), -16, 26, COLORS.text, 550, 'bold');
 
-    addText('Time', 20, 11, COLORS.textMuted, 500);
+    addText('Time', 22, 11, COLORS.textMuted, 500);
     const s = this.victoryData.elapsedSeconds;
-    addText(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`, 38, 28, COLORS.text, 550, 'bold');
+    addText(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`, 40, 26, COLORS.text, 550, 'bold');
 
     if (this.victoryData.bestMoves != null && this.victoryData.moves <= this.victoryData.bestMoves) {
-      addText('🏆 New Best!', 78, 15, COLORS.warning, 600, 'bold');
+      addText('🏆 New Best Record!', 78, 14, COLORS.warning, 600, 'bold');
     } else if (this.victoryData.bestMoves != null) {
       addText(`Best: ${this.victoryData.bestMoves}`, 78, 12, COLORS.textMuted, 600);
     }
@@ -152,34 +183,51 @@ export class VictoryScene extends Phaser.Scene {
       this.input.keyboard.once('keydown-SPACE', () => this.nextLevel());
     }
 
-    // Particle sparkles
-    this.createSparkles(width, height);
+    // Dynamic Confetti Explosion
+    this.createConfetti(width, height);
   }
 
-  private createSparkles(width: number, height: number) {
+  private createConfetti(width: number, height: number) {
     const sf = this.scaleFactor;
-    const colors = [COLORS.accent, COLORS.accentHover, 0xffffff, COLORS.warning];
-    for (let i = 0; i < 22; i++) {
-      const x = Phaser.Math.Between(30, width - 30);
-      const y = Phaser.Math.Between(30, height - 30);
+    const colors = [0x00d4aa, 0x00ffcc, 0xf5a623, 0xff3366, 0x3399ff, 0xffffff];
+    const count = 48;
+
+    for (let i = 0; i < count; i++) {
+      const startX = width / 2 + Phaser.Math.Between(-120 * sf, 120 * sf);
+      const startY = height / 2 + Phaser.Math.Between(-40 * sf, 120 * sf);
       const color = colors[Phaser.Math.Between(0, colors.length - 1)];
-      const size = Phaser.Math.FloatBetween(3, 7) * sf;
+      const w = Phaser.Math.Between(6, 12) * sf;
+      const h = Phaser.Math.Between(4, 9) * sf;
 
-      const spark = this.add.rectangle(x, y, size, size, color).setAlpha(0);
-      const delay = Phaser.Math.Between(0, 1000);
+      const piece = this.add.rectangle(startX, startY, w, h, color)
+        .setAlpha(0)
+        .setDepth(15);
 
+      const targetX = startX + Phaser.Math.Between(-200 * sf, 200 * sf);
+      const targetY = startY - Phaser.Math.Between(150 * sf, 350 * sf);
+      const fallY = height + 40 * sf;
+      const delay = Phaser.Math.Between(50, 400);
+
+      // Shoot up, then flutter down
       this.tweens.add({
-        targets: spark,
-        alpha: { from: 0, to: 0.9 },
-        scaleX: { from: 0, to: 1 },
-        scaleY: { from: 0, to: 1 },
-        y: y - Phaser.Math.Between(30, 80),
-        duration: Phaser.Math.Between(600, 1200),
+        targets: piece,
+        alpha: { from: 0, to: 1 },
+        x: targetX,
+        y: targetY,
+        angle: Phaser.Math.Between(-180, 180),
+        duration: Phaser.Math.Between(500, 750),
         delay,
-        yoyo: false,
-        ease: 'Sine.Out',
+        ease: 'Cubic.Out',
         onComplete: () => {
-          this.tweens.add({ targets: spark, alpha: 0, duration: 400, onComplete: () => spark.destroy() });
+          this.tweens.add({
+            targets: piece,
+            y: fallY,
+            x: targetX + Phaser.Math.Between(-60 * sf, 60 * sf),
+            angle: Phaser.Math.Between(-360, 360),
+            duration: Phaser.Math.Between(1400, 2200),
+            ease: 'Sine.In',
+            onComplete: () => piece.destroy(),
+          });
         },
       });
     }
