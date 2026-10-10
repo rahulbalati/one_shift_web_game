@@ -21,9 +21,23 @@ export class VictoryScene extends Phaser.Scene {
   }
 
   create() {
-    const nextLvl = this.victoryData.level + 1;
+    const lvl = this.victoryData.level;
+    const nextLvl = lvl + 1;
     try {
+      // 1. Update max unlocked level
+      const currentMax = parseInt(localStorage.getItem('oneshift_max_unlocked') || '1', 10);
+      const newMax = Math.max(isNaN(currentMax) ? 1 : currentMax, nextLvl);
+      localStorage.setItem('oneshift_max_unlocked', String(newMax));
+
+      // 2. Update current level pointer
       localStorage.setItem('oneshift_current_level', String(nextLvl));
+
+      // 3. Update personal best moves for this level
+      const savedBest = localStorage.getItem('oneshift_best_lvl_' + lvl);
+      const prevBest = savedBest ? parseInt(savedBest, 10) : null;
+      if (prevBest === null || this.victoryData.moves < prevBest) {
+        localStorage.setItem('oneshift_best_lvl_' + lvl, String(this.victoryData.moves));
+      }
     } catch (_) {}
 
     const { width, height } = this.scale;

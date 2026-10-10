@@ -52,6 +52,7 @@ export class GameScene extends Phaser.Scene {
   private arrowBtns: ArrowBtn[] = [];
   private timerText!: Phaser.GameObjects.Text;
   private movesText!: Phaser.GameObjects.Text;
+  private bestText!: Phaser.GameObjects.Text;
   private undoBtn!: Phaser.GameObjects.Container;
   private restartBtn!: Phaser.GameObjects.Container;
   private newGameBtn!: Phaser.GameObjects.Container;
@@ -154,12 +155,12 @@ export class GameScene extends Phaser.Scene {
       return; // Board preserved across resize / orientation change
     }
     if (this.level === 1) {
-      // Deterministic 1-move tutorial: Row 0 shifted right by 1
-      // Player shifts Row 0 left to immediately win!
+      // 2-step tutorial: Row 0 shifted right, Col 0 shifted down
       const solved = solvedBoard();
-      const scrambled = applyMove(solved, { type: 'row', index: 0, direction: 'right' });
-      this.board = cloneBoard(scrambled);
-      this.scrambledBoard = cloneBoard(scrambled);
+      const m1 = applyMove(solved, { type: 'row', index: 0, direction: 'right' });
+      const m2 = applyMove(m1, { type: 'col', index: 0, direction: 'down' });
+      this.board = cloneBoard(m2);
+      this.scrambledBoard = cloneBoard(m2);
     } else {
       const result = scramble(this.level);
       this.board = cloneBoard(result.board);
@@ -350,11 +351,44 @@ export class GameScene extends Phaser.Scene {
       color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
 
-    // Level display (not stored; pure display)
+    // Level display with navigation arrows
+    const maxUnlocked = parseInt(localStorage.getItem('oneshift_max_unlocked') || '1', 10);
+    const canPrev = this.level > 1;
+    const canNext = this.level < maxUnlocked;
+
     this.createText(cx, 54 * sf, `Level ${this.level}`, {
-      fontSize: `${Math.round(14 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
+      fontSize: `${Math.round(15 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#' + COLORS.text.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
+
+    // Prev Level Arrow (◀)
+    const prevBtn = this.createText(cx - 58 * sf, 54 * sf, '◀', {
+      fontSize: `${Math.round(15 * sf)}px`,
+      color: canPrev ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
+    }).setOrigin(0.5, 0);
+
+    if (canPrev) {
+      prevBtn.setInteractive({ useHandCursor: true });
+      prevBtn.on('pointerdown', () => {
+        sounds.playClick();
+        this.goToLevel(this.level - 1);
+      });
+    }
+
+    // Next Level Arrow (▶)
+    const nextBtn = this.createText(cx + 58 * sf, 54 * sf, '▶', {
+      fontSize: `${Math.round(15 * sf)}px`,
+      color: canNext ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
+    }).setOrigin(0.5, 0);
+
+    if (canNext) {
+      nextBtn.setInteractive({ useHandCursor: true });
+      nextBtn.on('pointerdown', () => {
+        sounds.playClick();
+        this.goToLevel(this.level + 1);
+      });
+    }
 
     // Stats row
     const statY = 76 * sf;
@@ -382,12 +416,15 @@ export class GameScene extends Phaser.Scene {
       color: '#' + COLORS.text.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
 
-    // Best
+    // Best (persisted in localStorage per level)
+    const savedBest = localStorage.getItem('oneshift_best_lvl_' + this.level);
+    const bestVal = savedBest ? parseInt(savedBest, 10) : (bestMoves[this.level] ?? null);
+
     this.createText(cx + statSpan, statY, 'BEST', {
       fontSize: `${Math.round(10 * sf)}px`,
       color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
-    this.createText(cx + statSpan, statY + 14 * sf, bestMoves[this.level] != null ? String(bestMoves[this.level]) : '—', {
+    this.bestText = this.createText(cx + statSpan, statY + 14 * sf, bestVal != null ? String(bestVal) : '—', {
       fontSize: `${Math.round(22 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.textAccent.toString(16).padStart(6, '0'),
@@ -734,10 +771,10 @@ export class GameScene extends Phaser.Scene {
 
     if (this.level === 1) {
       const bannerY = gridY - 26 * sf;
-      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 280 * sf, 30 * sf, COLORS.panelBg, 0.95)
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 320 * sf, 30 * sf, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
-      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👈 Swipe Row 1 LEFT to solve!', {
-        fontSize: `${Math.round(13 * sf)}px`,
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👆 Shift Col 1 UP, then 👈 Row 1 LEFT!', {
+        fontSize: `${Math.round(12 * sf)}px`,
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
       }).setOrigin(0.5);
@@ -761,7 +798,7 @@ export class GameScene extends Phaser.Scene {
       const bannerY = gridY - 26 * sf;
       const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 280 * sf, 30 * sf, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
-      const bannerTxt = this.createText(this.scale.width / 2, bannerY, 'Level 2: 2 shifts to solve!', {
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, 'Level 2: Strategic Multi-Shifts!', {
         fontSize: `${Math.round(13 * sf)}px`,
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
@@ -1092,6 +1129,14 @@ export class GameScene extends Phaser.Scene {
     this.refreshTileColors();
   }
 
+  private goToLevel(lvl: number) {
+    if (this.animating) return;
+    try {
+      localStorage.setItem('oneshift_current_level', String(lvl));
+    } catch (_) {}
+    this.scene.restart({ level: lvl });
+  }
+
   private doNewGame() {
     if (this.animating) return;
     this.scene.restart({ level: this.level });
@@ -1101,13 +1146,24 @@ export class GameScene extends Phaser.Scene {
     sounds.playVictory();
     crazyGames.happytime();
     crazyGames.gameplayStop();
-    this.timerEvent.remove();
+    this.timerEvent?.remove();
     const elapsed = this.getElapsedSeconds();
 
-    // Update best moves
-    if (bestMoves[this.level] == null || this.moveCount < bestMoves[this.level]) {
-      bestMoves[this.level] = this.moveCount;
+    // Persistent best score tracking
+    const currentBest = localStorage.getItem('oneshift_best_lvl_' + this.level);
+    const parsedBest = currentBest ? parseInt(currentBest, 10) : null;
+    let newBest = parsedBest;
+    if (parsedBest === null || this.moveCount < parsedBest) {
+      newBest = this.moveCount;
+      try {
+        localStorage.setItem('oneshift_best_lvl_' + this.level, String(this.moveCount));
+      } catch (_) {}
+      if (this.bestText) {
+        this.bestText.setText(String(this.moveCount));
+        this.bestText.setStyle({ color: '#00ffcc' });
+      }
     }
+    bestMoves[this.level] = newBest ?? this.moveCount;
 
     // Flash all tiles
     for (const sprite of this.tileSprites) {

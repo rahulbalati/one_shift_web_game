@@ -30,19 +30,16 @@ export interface ScrambleResult {
  */
 export function getLevelTimeLimit(level: number): number {
   if (level === 1) return 45;
-  if (level <= 3) return 40;
-  if (level <= 6) return 35;
-  if (level <= 10) return 30;
-  return 25;
+  if (level <= 4) return 45;
+  if (level <= 8) return 40;
+  return 35;
 }
 
 export function getParMoves(level: number): number {
-  if (level === 1) return 1;
-  if (level === 2) return 2;
-  if (level === 3) return 3;
-  if (level <= 6) return level;
-  if (level <= 10) return level + 1;
-  return Math.min(12, MAX_SCRAMBLE_MOVES);
+  if (level === 1) return 2;
+  if (level <= 4) return 6;
+  if (level <= 8) return 10;
+  return 14;
 }
 
 /**
@@ -54,17 +51,13 @@ export function getParMoves(level: number): number {
 export function scramble(level: number): ScrambleResult {
   let count: number;
   if (level === 1) {
-    count = 1;
-  } else if (level === 2) {
-    count = 2;
-  } else if (level === 3) {
-    count = 3;
-  } else if (level <= 6) {
-    count = level; // 4, 5, 6 moves
-  } else if (level <= 10) {
-    count = 6 + (level - 6); // 7, 8, 9, 10 moves
+    count = 2; // 2 tutorial moves
+  } else if (level <= 4) {
+    count = 5 + (level - 2); // 5 to 7 shifts: genuinely mixed board!
+  } else if (level <= 8) {
+    count = 8 + (level - 5); // 8 to 11 shifts: strategic complexity
   } else {
-    count = Math.min(10 + Math.floor((level - 10) * 0.8), MAX_SCRAMBLE_MOVES);
+    count = Math.min(12 + Math.floor((level - 9) * 0.8), MAX_SCRAMBLE_MOVES); // 12-16 deep shifts
   }
 
   let attempts = 0;
