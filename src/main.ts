@@ -50,8 +50,9 @@ document.addEventListener('touchmove', e => {
 // ─── Platform Hooks (CrazyGames, Telegram, YouTube Playables) ────────────────
 try {
   // CrazyGames SDK v3
-  crazyGames.init();
-  crazyGames.loadingStart();
+  crazyGames.init().then(() => {
+    crazyGames.loadingStart();
+  }).catch(() => {});
 
   // Telegram Mini App
   const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;

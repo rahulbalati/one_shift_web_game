@@ -193,8 +193,10 @@ export class VictoryScene extends Phaser.Scene {
       if (clicked) return;
       clicked = true;
       sounds.playClick();
-      crazyGames.gameplayStart();
-      this.nextLevel();
+      crazyGames.requestMidgameAd(() => {
+        crazyGames.gameplayStart();
+        this.nextLevel();
+      });
     };
 
     nextBtn.on('pointerdown', handleNext);
@@ -202,8 +204,16 @@ export class VictoryScene extends Phaser.Scene {
 
     // Also allow keyboard Enter/Space
     if (this.input.keyboard) {
-      this.input.keyboard.once('keydown-ENTER', () => this.nextLevel());
-      this.input.keyboard.once('keydown-SPACE', () => this.nextLevel());
+      const handleKey = () => {
+        if (clicked) return;
+        clicked = true;
+        crazyGames.requestMidgameAd(() => {
+          crazyGames.gameplayStart();
+          this.nextLevel();
+        });
+      };
+      this.input.keyboard.once('keydown-ENTER', handleKey);
+      this.input.keyboard.once('keydown-SPACE', handleKey);
     }
 
     // Dynamic Confetti Explosion

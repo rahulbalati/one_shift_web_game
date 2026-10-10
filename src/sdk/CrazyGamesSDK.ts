@@ -1,5 +1,6 @@
 // ─── CrazyGames SDK Integration Wrapper ──────────────────────────────────────
 // Official HTML5 SDK v3 Support with graceful offline/fallback handling
+import { sounds } from '../audio/SoundManager.ts';
 
 interface CrazyGamesSDKInterface {
   init: () => Promise<void>;
@@ -9,6 +10,16 @@ interface CrazyGamesSDKInterface {
     gameplayStart: () => void;
     gameplayStop: () => void;
     happytime: () => void;
+  };
+  ad?: {
+    requestAd: (
+      type: 'midgame' | 'rewarded',
+      callbacks?: {
+        adStarted?: () => void;
+        adFinished?: () => void;
+        adError?: (error: unknown) => void;
+      }
+    ) => Promise<void>;
   };
 }
 
@@ -64,6 +75,38 @@ class CrazyGamesBridge {
     try {
       window.CrazyGames?.SDK?.game?.happytime();
     } catch (_) {}
+  }
+
+  requestMidgameAd(onComplete?: () => void): void {
+    let completed = false;
+    const finish = () => {
+      if (!completed) {
+        completed = true;
+        onComplete?.();
+      }
+    };
+
+    try {
+      if (window.CrazyGames?.SDK?.ad?.requestAd) {
+        window.CrazyGames.SDK.ad.requestAd('midgame', {
+          adStarted: () => {
+            sounds.stopBGM();
+          },
+          adFinished: () => {
+            finish();
+          },
+          adError: (err) => {
+            console.warn('CrazyGames midgame ad notice / unfilled:', err);
+            finish();
+          },
+        }).catch(() => {
+          finish();
+        });
+        return;
+      }
+    } catch (_) {}
+
+    finish();
   }
 }
 
