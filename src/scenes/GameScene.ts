@@ -159,7 +159,14 @@ export class GameScene extends Phaser.Scene {
       return; // Board preserved across resize / orientation change
     }
     if (this.level === 1) {
-      // 2-step tutorial: Row 0 shifted right, Col 0 shifted down
+      // Pure 1-shift onboarding: Top row (Row 0) shifted RIGHT by 1
+      // Solved by swiping Top row (Row 0) LEFT by 1!
+      const solved = solvedBoard();
+      const m1 = applyMove(solved, { type: 'row', index: 0, direction: 'right' });
+      this.board = cloneBoard(m1);
+      this.scrambledBoard = cloneBoard(m1);
+    } else if (this.level === 2) {
+      // 2-shift level: Row 0 shifted right, Col 0 shifted down
       const solved = solvedBoard();
       const m1 = applyMove(solved, { type: 'row', index: 0, direction: 'right' });
       const m2 = applyMove(m1, { type: 'col', index: 0, direction: 'down' });
@@ -350,10 +357,17 @@ export class GameScene extends Phaser.Scene {
     const cx = this.scale.width / 2;
 
     // Title
-    this.createText(cx, 16 * sf, 'ONE SHIFT', {
-      fontSize: `${Math.round(26 * sf)}px`,
+    this.createText(cx, 12 * sf, 'ONE SHIFT', {
+      fontSize: `${Math.round(24 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
+    }).setOrigin(0.5, 0);
+
+    // Explicit Objective Reminder
+    this.createText(cx, 34 * sf, 'Goal: Order tiles 1–16', {
+      fontSize: `${Math.round(11 * sf)}px`,
+      fontStyle: 'bold',
+      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
     }).setOrigin(0.5, 0);
 
     // Level display with navigation arrows
@@ -361,7 +375,7 @@ export class GameScene extends Phaser.Scene {
     const canPrev = this.level > 1;
     const canNext = this.level < maxUnlocked;
 
-    this.createText(cx, 48 * sf, `Level ${this.level}`, {
+    this.createText(cx, 50 * sf, `Level ${this.level}`, {
       fontSize: `${Math.round(15 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.text.toString(16).padStart(6, '0'),
@@ -828,7 +842,7 @@ export class GameScene extends Phaser.Scene {
       const bannerY = gridY - 26 * sf;
       const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 320 * sf, 30 * sf, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
-      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👆 Shift Col 1 UP, then 👈 Row 1 LEFT!', {
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👈 Swipe Top Row LEFT to Solve in 1 Shift!', {
         fontSize: `${Math.round(12 * sf)}px`,
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
@@ -851,10 +865,10 @@ export class GameScene extends Phaser.Scene {
       items.push(bannerBg, bannerTxt, pointer);
     } else if (this.level === 2) {
       const bannerY = gridY - 26 * sf;
-      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 280 * sf, 30 * sf, COLORS.panelBg, 0.95)
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 320 * sf, 30 * sf, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
-      const bannerTxt = this.createText(this.scale.width / 2, bannerY, 'Level 2: Strategic Multi-Shifts!', {
-        fontSize: `${Math.round(13 * sf)}px`,
+      const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👆 Shift Col 1 UP, then 👈 Row 1 LEFT!', {
+        fontSize: `${Math.round(12 * sf)}px`,
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
       }).setOrigin(0.5);

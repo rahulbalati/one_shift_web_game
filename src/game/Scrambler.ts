@@ -29,16 +29,18 @@ export interface ScrambleResult {
  * Level 11+: 25s
  */
 export function getLevelTimeLimit(level: number): number {
-  if (level === 1) return 45;
-  if (level <= 4) return 45;
-  if (level <= 8) return 40;
+  if (level === 1) return 120; // Ample onboarding time; prevents rapid timeout rejection
+  if (level === 2) return 90;
+  if (level <= 4) return 60;
+  if (level <= 8) return 45;
   return 35;
 }
 
 export function getParMoves(level: number): number {
-  if (level === 1) return 2;
-  if (level <= 4) return 6;
-  if (level <= 8) return 10;
+  if (level === 1) return 1; // Pure 1-shift puzzle
+  if (level === 2) return 2; // 2-shift strategic puzzle
+  if (level <= 4) return 5;
+  if (level <= 8) return 9;
   return 14;
 }
 

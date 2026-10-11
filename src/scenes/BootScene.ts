@@ -43,7 +43,7 @@ export class BootScene extends Phaser.Scene {
     const font = "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
 
     // Title
-    this.add.text(cx, cy - 20 * sf, 'ONE SHIFT', {
+    this.add.text(cx, cy - 25 * sf, 'ONE SHIFT', {
       fontSize: `${Math.round(42 * sf)}px`,
       fontFamily: font,
       fontStyle: 'bold',
@@ -51,11 +51,21 @@ export class BootScene extends Phaser.Scene {
       color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
     }).setOrigin(0.5);
 
-    this.add.text(cx, cy + 28 * sf, 'A Logic Puzzle', {
+    this.add.text(cx, cy + 22 * sf, 'A Logic Puzzle', {
       fontSize: `${Math.round(15 * sf)}px`,
       fontFamily: font,
+      fontStyle: 'bold',
       resolution: dpr,
       color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
+    }).setOrigin(0.5);
+
+    // Clear gameplay objective (resolves CrazyGames "No controls or explanations" check)
+    this.add.text(cx, cy + 52 * sf, 'Goal: Arrange tiles 1–16 in order\nSlide entire rows & columns to solve', {
+      fontSize: `${Math.round(13 * sf)}px`,
+      fontFamily: font,
+      resolution: dpr,
+      align: 'center',
+      color: '#' + COLORS.text.toString(16).padStart(6, '0'),
     }).setOrigin(0.5);
 
     // Progressive auto-save: load highest level reached
@@ -64,7 +74,7 @@ export class BootScene extends Phaser.Scene {
     const btnLabel = startLevel > 1 ? `▶ Resume Level ${startLevel}` : '▶ Tap to Play';
 
     // 1-Click to Play prompt (active immediately from frame 0)
-    const playBtn = this.add.text(cx, cy + 85 * sf, btnLabel, {
+    const playBtn = this.add.text(cx, cy + 105 * sf, btnLabel, {
       fontSize: `${Math.round(18 * sf)}px`,
       fontFamily: font,
       fontStyle: 'bold',

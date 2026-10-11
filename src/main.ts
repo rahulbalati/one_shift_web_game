@@ -7,8 +7,8 @@ import { crazyGames } from './sdk/CrazyGamesSDK.ts';
 
 // ─── Responsive canvas sizing ─────────────────────────────────────────────────
 function getGameSize(): { width: number; height: number } {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const w = typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 390;
+  const h = typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 780;
   return { width: w, height: h };
 }
 
@@ -38,37 +38,46 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
-const game = new Phaser.Game(config);
+let game: Phaser.Game | null = null;
 
-// Prevent context menu and touch bounce on mobile
-document.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('touchmove', e => {
-  const scale = (e as unknown as { scale?: number }).scale;
-  if (scale !== undefined && scale !== 1) e.preventDefault();
-}, { passive: false });
-
-// ─── Platform Hooks (CrazyGames, Telegram, YouTube Playables) ────────────────
-try {
-  // CrazyGames SDK v3
-  crazyGames.init().then(() => {
-    crazyGames.loadingStart();
-  }).catch(() => {});
-
-  // Telegram Mini App
-  const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;
-  if (tg) {
-    tg.ready?.();
-    tg.expand?.();
-    tg.setHeaderColor?.('#0a0f2e');
-    tg.setBackgroundColor?.('#0a0f2e');
+async function bootstrap() {
+  // Prevent context menu and touch bounce on mobile
+  if (typeof document !== 'undefined') {
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('touchmove', e => {
+      const scale = (e as unknown as { scale?: number }).scale;
+      if (scale !== undefined && scale !== 1) e.preventDefault();
+    }, { passive: false });
   }
 
-  // YouTube Playables
-  const yt = (window as unknown as { YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void } }).YT_PLAYABLES;
-  if (yt?.firstFrameReady) yt.firstFrameReady();
-  if (yt?.gameReady) yt.gameReady();
-} catch (_) {
-  // Graceful silent fallback
+  // CrazyGames SDK v3: Initialize first with safety timeout
+  try {
+    const timeout = new Promise<void>(resolve => setTimeout(resolve, 1500));
+    await Promise.race([crazyGames.init(), timeout]);
+  } catch (_) {}
+
+  // Signal SDK that loading has started
+  crazyGames.loadingStart();
+
+  // Create Phaser Game instance (BootScene will call loadingStop once created)
+  game = new Phaser.Game(config);
+
+  // Platform Hooks (Telegram, YouTube Playables)
+  try {
+    const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;
+    if (tg) {
+      tg.ready?.();
+      tg.expand?.();
+      tg.setHeaderColor?.('#0a0f2e');
+      tg.setBackgroundColor?.('#0a0f2e');
+    }
+
+    const yt = (window as unknown as { YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void } }).YT_PLAYABLES;
+    if (yt?.firstFrameReady) yt.firstFrameReady();
+    if (yt?.gameReady) yt.gameReady();
+  } catch (_) {}
 }
+
+bootstrap();
 
 export default game;
