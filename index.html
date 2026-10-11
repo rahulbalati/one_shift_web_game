@@ -27,9 +27,12 @@
         text-rendering: optimizeLegibility;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       }
-      canvas { 
+      #game-container, canvas { 
         display: block; 
         margin: 0 auto; 
+        touch-action: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
         image-rendering: -webkit-optimize-contrast;
         image-rendering: crisp-edges;
       }

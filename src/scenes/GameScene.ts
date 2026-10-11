@@ -84,6 +84,7 @@ export class GameScene extends Phaser.Scene {
   private swipeCol = -1;
   private isSwiping = false;
   private activePointerId: number | null = null;
+  private pendingMove: MoveRecord | null = null;
 
   constructor() {
     super({ key: SCENE.GAME });
@@ -196,7 +197,7 @@ export class GameScene extends Phaser.Scene {
     text: string | string[],
     style: Phaser.Types.GameObjects.Text.TextStyle = {},
   ): Phaser.GameObjects.Text {
-    const dpr = Math.max(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     return this.add.text(x, y, text, {
       fontFamily: "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
       resolution: dpr,
@@ -333,10 +334,7 @@ export class GameScene extends Phaser.Scene {
     });
     container.on('pointerdown', () => {
       sounds.playClick();
-      this.tweens.add({ targets: container, scaleX: 0.9, scaleY: 0.9, duration: 60 });
-    });
-    container.on('pointerup', () => {
-      this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 80 });
+      this.tweens.add({ targets: container, scaleX: 0.9, scaleY: 0.9, duration: 50, yoyo: true });
       this.doShift(type, index, direction);
     });
 
@@ -746,7 +744,7 @@ export class GameScene extends Phaser.Scene {
   // ─── Swipe & Drag controls ──────────────────────────────────────────────────
   private setupSwipeControls() {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.animating || this.paused) return;
+      if (this.paused) return;
       if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
       if (this.activePointerId !== null) return; // Ignore multi-touch secondary fingers
 
@@ -758,16 +756,16 @@ export class GameScene extends Phaser.Scene {
       const step     = tileSize + tileGap;
       const gridSpan = GRID_TOTAL * sf;
 
-      // Generous edge-to-edge hitbox margin (+14px) so outer thumb swipes never fail
-      const hitMargin = 14 * sf;
+      // Generous hitbox margin (+10px) so outer thumb swipes never fail
+      const hitMargin = 10 * sf;
       const relX = pointer.x - gridX;
       const relY = pointer.y - gridY;
 
       if (relX >= -hitMargin && relX <= gridSpan + hitMargin &&
           relY >= -hitMargin && relY <= gridSpan + hitMargin) {
-        // Clamp row and column so finger hitting outer border is recognized reliably
-        const c = Phaser.Math.Clamp(Math.floor(relX / step), 0, GRID_SIZE - 1);
-        const r = Phaser.Math.Clamp(Math.floor(relY / step), 0, GRID_SIZE - 1);
+        // True midpoint-centered row and col calculation (gap is evenly divided between rows/cols)
+        const r = Phaser.Math.Clamp(Math.round((relY - tileSize / 2) / step), 0, GRID_SIZE - 1);
+        const c = Phaser.Math.Clamp(Math.round((relX - tileSize / 2) / step), 0, GRID_SIZE - 1);
 
         this.activePointerId = pointer.id;
         this.swipeStartX = pointer.x;
@@ -778,17 +776,45 @@ export class GameScene extends Phaser.Scene {
       }
     });
 
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (!this.isSwiping || pointer.id !== this.activePointerId) return;
+      if (this.paused) return;
+
+      const dx = pointer.x - this.swipeStartX;
+      const dy = pointer.y - this.swipeStartY;
+      const sf = this.scaleFactor;
+      const threshold = 16 * sf;
+
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+
+      // Trigger swipe immediately when finger crosses threshold with a clear dominant axis
+      if (absX >= threshold || absY >= threshold) {
+        if (absX >= absY * 1.15) {
+          this.isSwiping = false;
+          this.activePointerId = null;
+          const dir: ShiftDirection = dx > 0 ? 'right' : 'left';
+          this.doShift('row', this.swipeRow, dir);
+        } else if (absY >= absX * 1.15) {
+          this.isSwiping = false;
+          this.activePointerId = null;
+          const dir: ShiftDirection = dy > 0 ? 'down' : 'up';
+          this.doShift('col', this.swipeCol, dir);
+        }
+      }
+    });
+
     const handlePointerEnd = (pointer: Phaser.Input.Pointer) => {
       if (!this.isSwiping || pointer.id !== this.activePointerId) return;
       this.isSwiping = false;
       this.activePointerId = null;
 
-      if (this.animating || this.paused) return;
+      if (this.paused) return;
 
       const dx = pointer.x - this.swipeStartX;
       const dy = pointer.y - this.swipeStartY;
       const sf = this.scaleFactor;
-      const minDistance = 14 * sf; // Highly responsive flick threshold
+      const minDistance = 12 * sf; // Flick threshold on release
 
       if (Math.abs(dx) < minDistance && Math.abs(dy) < minDistance) {
         return; // Small tap, ignore
@@ -963,12 +989,19 @@ export class GameScene extends Phaser.Scene {
 
   // ─── Shift logic ────────────────────────────────────────────────────────────
   doShift(type: 'row' | 'col', index: number, direction: ShiftDirection) {
-    if (this.animating || this.paused) return;
+    if (this.paused) return;
     if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
+
+    if (this.animating) {
+      // Buffer at most 1 subsequent move so rapid consecutive swipes feel seamless
+      this.pendingMove = { type, index, direction };
+      return;
+    }
 
     this.dismissTutorial();
 
     const move: MoveRecord = { type, index, direction };
+    const oldBoard = [...this.board];
     const newBoard = applyMove(this.board, move);
 
     sounds.playSlide();
@@ -984,34 +1017,37 @@ export class GameScene extends Phaser.Scene {
       this.animating = false;
       triggerHaptic(15);
 
-      // Game Juice: subtle tactile impact shake
-      this.cameras.main.shake(50, 0.002);
-
-      // Pulse and chime for placed solved tiles
-      let hasSolved = false;
+      // Pulse and chime ONLY for tile(s) that NEWLY locked into solved position
+      let newlySolved = false;
       for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
         const val = this.board[i];
-        if (val === i + 1) {
+        if (val === i + 1 && oldBoard[i] !== i + 1) {
           const sprite = this.tileSprites.find(s => s.value === val);
           if (sprite) {
             this.tweens.add({
               targets: sprite.container,
               scaleX: 1.05,
               scaleY: 1.05,
-              duration: 90,
+              duration: 80,
               yoyo: true,
               ease: 'Sine.InOut',
             });
-            hasSolved = true;
+            newlySolved = true;
           }
         }
       }
-      if (hasSolved) {
+      if (newlySolved) {
         sounds.playTileSolved();
       }
 
       if (isSolved(this.board)) {
+        this.pendingMove = null;
         this.onVictory();
+      } else if (this.pendingMove) {
+        // Execute the buffered move immediately
+        const next = this.pendingMove;
+        this.pendingMove = null;
+        this.doShift(next.type, next.index, next.direction);
       }
     });
   }

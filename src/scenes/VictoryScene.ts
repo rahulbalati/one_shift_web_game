@@ -109,7 +109,7 @@ export class VictoryScene extends Phaser.Scene {
       });
     }
 
-    const dpr = Math.max(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const font = "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
 
     const addText = (text: string, dy: number, size: number, color: number, delay = 300, style = '') => {

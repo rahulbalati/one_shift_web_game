@@ -24,15 +24,91 @@ const CHORD_DURATION = 3.6; // seconds per chord
 
 class SoundManager {
   private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
   private muted: boolean = false;
   private sdkMuted: boolean = false;
   private bgmPlaying: boolean = false;
   private bgmChordStep: number = 0;
   private bgmTimeoutId: number | null = null;
   private activeBgmNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
+  private currentFilter: BiquadFilterNode | null = null;
 
   constructor() {
     this.muted = localStorage.getItem('oneshift_muted') === 'true';
+    this.setupLifecycleListeners();
+  }
+
+  private setupLifecycleListeners() {
+    if (typeof document === 'undefined') return;
+
+    const onHidden = () => {
+      this.handleAppBackground();
+    };
+
+    const onVisible = () => {
+      this.handleAppForeground();
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) onHidden();
+      else onVisible();
+    });
+
+    window.addEventListener('pagehide', onHidden);
+    window.addEventListener('blur', () => {
+      // Gentle pause on blur if mobile tab lost focus
+      if (document.hidden) onHidden();
+    });
+    window.addEventListener('focus', onVisible);
+  }
+
+  private handleAppBackground() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+
+    // Instant micro-fade to silence on master gain (15ms) prevents audio buffer pop/burst
+    if (this.masterGain) {
+      try {
+        this.masterGain.gain.cancelScheduledValues(now);
+        this.masterGain.gain.setValueAtTime(this.masterGain.gain.value, now);
+        this.masterGain.gain.linearRampToValueAtTime(0.0001, now + 0.015);
+      } catch (_) {}
+    }
+
+    this.stopBGM();
+
+    // Cleanly suspend hardware audio context to release OS hardware thread
+    try {
+      if (this.ctx.state === 'running') {
+        this.ctx.suspend().catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  private handleAppForeground() {
+    if (!this.ctx) return;
+
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume().then(() => {
+        if (!this.isMuted() && this.masterGain) {
+          const now = this.ctx!.currentTime;
+          this.masterGain.gain.cancelScheduledValues(now);
+          this.masterGain.gain.setValueAtTime(0.0001, now);
+          this.masterGain.gain.linearRampToValueAtTime(1, now + 0.05);
+          if (!this.bgmPlaying) {
+            this.startBGM();
+          }
+        }
+      }).catch(() => {});
+    } else if (!this.isMuted() && this.masterGain) {
+      const now = this.ctx.currentTime;
+      this.masterGain.gain.cancelScheduledValues(now);
+      this.masterGain.gain.setValueAtTime(0.0001, now);
+      this.masterGain.gain.linearRampToValueAtTime(1, now + 0.05);
+      if (!this.bgmPlaying) {
+        this.startBGM();
+      }
+    }
   }
 
   private initCtx() {
@@ -40,6 +116,9 @@ class SoundManager {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (AudioCtx) {
         this.ctx = new AudioCtx();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.setValueAtTime(this.isMuted() ? 0 : 1, this.ctx.currentTime);
+        this.masterGain.connect(this.ctx.destination);
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {
@@ -49,17 +128,30 @@ class SoundManager {
 
   resume() {
     this.initCtx();
-    if (!this.isMuted() && !this.bgmPlaying) {
-      this.startBGM();
+    if (!this.isMuted()) {
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
+      }
+      if (!this.bgmPlaying) {
+        this.startBGM();
+      }
     }
   }
 
   setSdkMute(muted: boolean) {
     this.sdkMuted = muted;
-    if (this.sdkMuted) {
+    if (this.isMuted()) {
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
+      }
       this.stopBGM();
-    } else if (!this.muted && !this.bgmPlaying) {
-      this.startBGM();
+    } else {
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
+      }
+      if (!this.bgmPlaying) {
+        this.startBGM();
+      }
     }
   }
 
@@ -70,12 +162,18 @@ class SoundManager {
   toggleMute(): boolean {
     this.muted = !this.muted;
     localStorage.setItem('oneshift_muted', String(this.muted));
-    if (!this.isMuted()) {
+    if (this.isMuted()) {
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
+      }
+      this.stopBGM();
+    } else {
       this.initCtx();
+      if (this.masterGain && this.ctx) {
+        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
+      }
       this.playClick();
       this.startBGM();
-    } else {
-      this.stopBGM();
     }
     return this.isMuted();
   }
@@ -103,27 +201,39 @@ class SoundManager {
         try {
           node.gain.gain.cancelScheduledValues(now);
           node.gain.gain.setValueAtTime(node.gain.gain.value, now);
-          node.gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-          node.osc.stop(now + 0.35);
+          node.gain.gain.linearRampToValueAtTime(0.0001, now + 0.04);
+          node.osc.stop(now + 0.05);
         } catch (_) {}
       }
     }
     this.activeBgmNodes = [];
+    if (this.currentFilter) {
+      try {
+        this.currentFilter.disconnect();
+      } catch (_) {}
+      this.currentFilter = null;
+    }
   }
 
   private scheduleChord() {
-    if (!this.bgmPlaying || this.muted || !this.ctx) return;
+    if (!this.bgmPlaying || this.isMuted() || !this.ctx || !this.masterGain) return;
 
     const chord = BGM_CHORDS[this.bgmChordStep % BGM_CHORDS.length];
     this.bgmChordStep++;
     const now = this.ctx.currentTime;
+
+    // Disconnect previous filter to prevent node leaks
+    if (this.currentFilter) {
+      try { this.currentFilter.disconnect(); } catch (_) {}
+    }
 
     // Filter to give that warm, mellow lo-fi aesthetic
     const filter = this.ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(540, now);
     filter.Q.setValueAtTime(0.7, now);
-    filter.connect(this.ctx.destination);
+    filter.connect(this.masterGain);
+    this.currentFilter = filter;
 
     const newNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
 
@@ -140,15 +250,15 @@ class SoundManager {
 
       // Smooth attack -> sustain -> release envelope
       gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.linearRampToValueAtTime(0.028, now + 1.2); // Gentle fade in
-      gain.gain.setValueAtTime(0.028, now + CHORD_DURATION - 1.2);
+      gain.gain.linearRampToValueAtTime(0.026, now + 1.2); // Gentle fade in
+      gain.gain.setValueAtTime(0.026, now + CHORD_DURATION - 1.2);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + CHORD_DURATION); // Gentle fade out
 
       osc.connect(gain);
       gain.connect(filter);
 
       osc.start(now);
-      osc.stop(now + CHORD_DURATION + 0.1);
+      osc.stop(now + CHORD_DURATION + 0.05);
 
       newNodes.push({ osc, gain });
     }
@@ -177,8 +287,9 @@ class SoundManager {
     gain.gain.setValueAtTime(0.18, this.ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.04);
 
+    const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(out);
 
     osc.start();
     osc.stop(this.ctx.currentTime + 0.04);
@@ -202,8 +313,9 @@ class SoundManager {
     gain.gain.linearRampToValueAtTime(0.2, now + 0.03);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
 
+    const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(out);
 
     osc.start();
     osc.stop(now + 0.12);
@@ -226,8 +338,9 @@ class SoundManager {
     gain.gain.setValueAtTime(0.14, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
 
+    const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(out);
 
     osc.start();
     osc.stop(now + 0.18);
@@ -242,6 +355,7 @@ class SoundManager {
     const now = this.ctx.currentTime;
     // C5, E5, G5, C6 triumphant chord
     const notes = [523.25, 659.25, 783.99, 1046.5];
+    const out = this.masterGain || this.ctx.destination;
 
     notes.forEach((freq, idx) => {
       const osc = this.ctx!.createOscillator();
@@ -256,7 +370,7 @@ class SoundManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.55);
 
       osc.connect(gain);
-      gain.connect(this.ctx!.destination);
+      gain.connect(out);
 
       osc.start(now + delay);
       osc.stop(now + delay + 0.55);
@@ -280,8 +394,9 @@ class SoundManager {
     gain.gain.setValueAtTime(0.08, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
 
+    const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
-    gain.connect(this.ctx.destination);
+    gain.connect(out);
 
     osc.start();
     osc.stop(now + 0.05);
@@ -295,6 +410,8 @@ class SoundManager {
 
     const now = this.ctx.currentTime;
     const notes = [349.23, 293.66, 233.08];
+    const out = this.masterGain || this.ctx.destination;
+
     notes.forEach((freq, idx) => {
       const osc = this.ctx!.createOscillator();
       const gain = this.ctx!.createGain();
@@ -307,7 +424,7 @@ class SoundManager {
       gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.35);
 
       osc.connect(gain);
-      gain.connect(this.ctx!.destination);
+      gain.connect(out);
 
       osc.start(now + delay);
       osc.stop(now + delay + 0.35);
