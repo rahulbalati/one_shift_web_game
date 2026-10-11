@@ -2,22 +2,22 @@
 export const GRID_SIZE = 4;
 export const TILE_COUNT = GRID_SIZE * GRID_SIZE;
 
-// Design: portrait-first, responsive
-export const BASE_WIDTH  = 480;
-export const BASE_HEIGHT = 780;
+// Design: portrait-first virtual resolution (Scale.FIT auto-scales to any screen/embed)
+export const BASE_WIDTH  = 460;
+export const BASE_HEIGHT = 760;
 
 // Grid layout (calculated relative to BASE_WIDTH/HEIGHT)
 export const GRID_COLS = 4;
 export const GRID_ROWS = 4;
-export const TILE_SIZE = 82;          // px for each tile
+export const TILE_SIZE = 78;          // px for each tile
 export const TILE_GAP  = 6;           // gap between tiles
-export const GRID_TOTAL = GRID_COLS * (TILE_SIZE + TILE_GAP) - TILE_GAP; // 334
-export const GRID_X = (BASE_WIDTH - GRID_TOTAL) / 2;   // grid left edge
-export const GRID_Y = 210;            // grid top edge
+export const GRID_TOTAL = GRID_COLS * (TILE_SIZE + TILE_GAP) - TILE_GAP; // 330
+export const GRID_X = (BASE_WIDTH - GRID_TOTAL) / 2;   // (460 - 330) / 2 = 65
+export const GRID_Y = 246;            // grid top edge
 
 // Arrow button layout
-export const ARROW_SIZE  = 44;
-export const ARROW_MARGIN = 12;
+export const ARROW_SIZE  = 40;
+export const ARROW_MARGIN = 10;
 
 // ─── Color palette ───────────────────────────────────────────────────────────
 export const COLORS = {

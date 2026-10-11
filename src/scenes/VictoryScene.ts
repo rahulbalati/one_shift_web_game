@@ -41,18 +41,18 @@ export class VictoryScene extends Phaser.Scene {
       }
     } catch (_) {}
 
-    const { width, height } = this.scale;
-    const isLandscape = width > height;
-    const sf = Math.min(width / (isLandscape ? 560 : 420), height / 560, 1.8);
-    this.scaleFactor = sf;
+    const width = 460;
+    const height = 760;
+    const sf = 1;
+    this.scaleFactor = 1;
 
     // Dim overlay
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0).setOrigin(0);
     this.tweens.add({ targets: overlay, fillAlpha: 0.78, duration: 400 });
 
     // Panel
-    const panW = Math.min(350 * sf, width - 40 * sf);
-    const panH = 370 * sf;
+    const panW = 340;
+    const panH = 390;
     const panX = width / 2;
     const panY = height / 2;
 

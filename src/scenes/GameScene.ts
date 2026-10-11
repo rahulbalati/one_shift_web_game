@@ -144,19 +144,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private computeScale() {
-    const { width, height } = this.scale;
-    const isLandscape = width > height;
-
-    // In portrait: fit neededWidth (470) and vertical budget (700)
-    // In landscape (e.g. CrazyGames 16:9 desktop iframe 907x510 or 1280x720):
-    // Vertical height is the constraint, so optimize for 560px vertical budget
-    const neededWidth = GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + 24;
-    const neededHeight = isLandscape ? 560 : 700;
-
-    const sx = width / neededWidth;
-    const sy = height / neededHeight;
-    // Allow scaling up to 1.75 on large displays so the puzzle fills the screen
-    this.scaleFactor = Math.min(sx, sy, 1.75);
+    this.scaleFactor = 1;
   }
 
   private generatePuzzle() {
@@ -187,8 +175,6 @@ export class GameScene extends Phaser.Scene {
   // ─── Background ─────────────────────────────────────────────────────────────
   private drawBackground() {
     const { width, height } = this.scale;
-    const isLandscape = width > height;
-
     const bg = this.add.graphics();
     bg.fillGradientStyle(COLORS.bgDeep, COLORS.bgDeep, COLORS.bgPanel, COLORS.bgPanel, 1);
     bg.fillRect(0, 0, width, height);
@@ -199,26 +185,6 @@ export class GameScene extends Phaser.Scene {
     for (let x = 20; x < width; x += 40) {
       for (let y = 20; y < height; y += 40) {
         dots.fillCircle(x, y, 1);
-      }
-    }
-
-    // Desktop Widescreen Aesthetic Framing (eliminates blank gray void in 16:9 iframe)
-    if (isLandscape && width > 640) {
-      const sf = this.scaleFactor;
-      const boardW = (GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN)) * sf;
-      const leftEdge = (width - boardW) / 2;
-
-      const decor = this.add.graphics();
-      decor.lineStyle(1.5, COLORS.accent, 0.2);
-
-      // Left ambient pillar bracket
-      if (leftEdge > 60) {
-        decor.strokeRoundedRect(28, 30, leftEdge - 56, height - 60, 10);
-      }
-      // Right ambient pillar bracket
-      const rightEdge = width - leftEdge;
-      if (width - rightEdge > 60) {
-        decor.strokeRoundedRect(rightEdge + 28, 30, leftEdge - 56, height - 60, 10);
       }
     }
   }
@@ -866,24 +832,25 @@ export class GameScene extends Phaser.Scene {
     const items: Phaser.GameObjects.GameObject[] = [];
 
     if (this.level === 1) {
-      const bannerY = gridY - 26 * sf;
-      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 320 * sf, 30 * sf, COLORS.panelBg, 0.95)
+      // Placed cleanly at y=176 in the gap between stats (y=155) and up-arrows (y=216)
+      const bannerY = 176;
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 340, 26, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
       const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👈 Swipe Top Row LEFT to Solve in 1 Shift!', {
-        fontSize: `${Math.round(12 * sf)}px`,
+        fontSize: '12px',
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
       }).setOrigin(0.5);
 
       // Animated hand / chevron moving across row 0
       const rowY = gridY + tileSize / 2;
-      const pointer = this.createText(gridX + GRID_TOTAL * sf - 25 * sf, rowY, '👈', {
-        fontSize: `${Math.round(30 * sf)}px`,
+      const pointer = this.createText(gridX + GRID_TOTAL - 25, rowY, '👈', {
+        fontSize: '28px',
       }).setOrigin(0.5);
 
       this.tweens.add({
         targets: pointer,
-        x: gridX + 35 * sf,
+        x: gridX + 35,
         duration: 1300,
         repeat: -1,
         ease: 'Cubic.InOut',
@@ -891,11 +858,12 @@ export class GameScene extends Phaser.Scene {
 
       items.push(bannerBg, bannerTxt, pointer);
     } else if (this.level === 2) {
-      const bannerY = gridY - 26 * sf;
-      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 320 * sf, 30 * sf, COLORS.panelBg, 0.95)
+      // Placed cleanly at y=176 in the gap between stats (y=155) and up-arrows (y=216)
+      const bannerY = 176;
+      const bannerBg = this.add.rectangle(this.scale.width / 2, bannerY, 340, 26, COLORS.panelBg, 0.95)
         .setStrokeStyle(1.5, COLORS.accent);
       const bannerTxt = this.createText(this.scale.width / 2, bannerY, '👆 Shift Col 1 UP, then 👈 Row 1 LEFT!', {
-        fontSize: `${Math.round(12 * sf)}px`,
+        fontSize: '12px',
         fontStyle: 'bold',
         color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
       }).setOrigin(0.5);
@@ -903,9 +871,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Skip Tutorial button (meets CrazyGames "make onboarding skippable" requirement)
-    const skipY = GRID_Y * sf + GRID_TOTAL * sf + (ARROW_SIZE + ARROW_MARGIN * 2 + 106) * sf;
+    const skipY = 742;
     const skipBtn = this.createText(this.scale.width / 2, skipY, '⏭ Skip Tutorial', {
-      fontSize: `${Math.round(13 * sf)}px`,
+      fontSize: '13px',
       fontStyle: 'bold',
       color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
     }).setOrigin(0.5).setInteractive({ useHandCursor: true });

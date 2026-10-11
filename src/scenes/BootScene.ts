@@ -12,9 +12,9 @@ export class BootScene extends Phaser.Scene {
     // Notify CrazyGames SDK that initial loading has completed
     crazyGames.loadingStop();
 
-    const { width, height } = this.scale;
-    const isLandscape = width > height;
-    const sf = Math.min(width / (isLandscape ? 560 : 380), height / 620, 1.8);
+    const width = 460;
+    const height = 760;
+    const sf = 1;
 
     // Deep gradient background
     const bg = this.add.graphics();

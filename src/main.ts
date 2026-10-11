@@ -2,28 +2,19 @@ import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
 import { VictoryScene } from './scenes/VictoryScene.ts';
-import { COLORS } from './config.ts';
+import { COLORS, BASE_WIDTH, BASE_HEIGHT } from './config.ts';
 import { crazyGames } from './sdk/CrazyGamesSDK.ts';
 
-// ─── Responsive canvas sizing ─────────────────────────────────────────────────
-function getGameSize(): { width: number; height: number } {
-  const w = typeof window !== 'undefined' && window.innerWidth > 0 ? window.innerWidth : 390;
-  const h = typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 780;
-  return { width: w, height: h };
-}
-
-const { width, height } = getGameSize();
-
-// ─── Phaser Game config ───────────────────────────────────────────────────────
+// ─── Phaser Game config (Virtual Resolution with Scale.FIT) ───────────────────
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  width,
-  height,
+  width: BASE_WIDTH,
+  height: BASE_HEIGHT,
   backgroundColor: '#' + COLORS.bgDeep.toString(16).padStart(6, '0'),
   parent: 'game-container',
   scene: [BootScene, GameScene, VictoryScene],
   scale: {
-    mode: Phaser.Scale.RESIZE,
+    mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
   roundPixels: true,
