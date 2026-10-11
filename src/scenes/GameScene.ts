@@ -1,6 +1,5 @@
 import Phaser from 'phaser';
 import {
-  BASE_HEIGHT,
   GRID_SIZE, TILE_SIZE, TILE_GAP, GRID_TOTAL, GRID_Y,
   ARROW_SIZE, ARROW_MARGIN,
   COLORS, SCENE,
@@ -146,12 +145,18 @@ export class GameScene extends Phaser.Scene {
 
   private computeScale() {
     const { width, height } = this.scale;
-    // Fit into available space maintaining aspect ratio
-    // Total footprint: GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + safety edge margins (24px)
-    const neededWidth = GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + 24; // 334 + 112 + 24 = 470
+    const isLandscape = width > height;
+
+    // In portrait: fit neededWidth (470) and vertical budget (700)
+    // In landscape (e.g. CrazyGames 16:9 desktop iframe 907x510 or 1280x720):
+    // Vertical height is the constraint, so optimize for 560px vertical budget
+    const neededWidth = GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN) + 24;
+    const neededHeight = isLandscape ? 560 : 700;
+
     const sx = width / neededWidth;
-    const sy = height / (BASE_HEIGHT + 20);
-    this.scaleFactor = Math.min(sx, sy, 1.3); // Safe scaling for all screens down to 320px
+    const sy = height / neededHeight;
+    // Allow scaling up to 1.75 on large displays so the puzzle fills the screen
+    this.scaleFactor = Math.min(sx, sy, 1.75);
   }
 
   private generatePuzzle() {
@@ -182,6 +187,8 @@ export class GameScene extends Phaser.Scene {
   // ─── Background ─────────────────────────────────────────────────────────────
   private drawBackground() {
     const { width, height } = this.scale;
+    const isLandscape = width > height;
+
     const bg = this.add.graphics();
     bg.fillGradientStyle(COLORS.bgDeep, COLORS.bgDeep, COLORS.bgPanel, COLORS.bgPanel, 1);
     bg.fillRect(0, 0, width, height);
@@ -192,6 +199,26 @@ export class GameScene extends Phaser.Scene {
     for (let x = 20; x < width; x += 40) {
       for (let y = 20; y < height; y += 40) {
         dots.fillCircle(x, y, 1);
+      }
+    }
+
+    // Desktop Widescreen Aesthetic Framing (eliminates blank gray void in 16:9 iframe)
+    if (isLandscape && width > 640) {
+      const sf = this.scaleFactor;
+      const boardW = (GRID_TOTAL + 2 * (ARROW_SIZE + ARROW_MARGIN)) * sf;
+      const leftEdge = (width - boardW) / 2;
+
+      const decor = this.add.graphics();
+      decor.lineStyle(1.5, COLORS.accent, 0.2);
+
+      // Left ambient pillar bracket
+      if (leftEdge > 60) {
+        decor.strokeRoundedRect(28, 30, leftEdge - 56, height - 60, 10);
+      }
+      // Right ambient pillar bracket
+      const rightEdge = width - leftEdge;
+      if (width - rightEdge > 60) {
+        decor.strokeRoundedRect(rightEdge + 28, 30, leftEdge - 56, height - 60, 10);
       }
     }
   }
@@ -1242,16 +1269,19 @@ export class GameScene extends Phaser.Scene {
     }
     bestMoves[this.level] = newBest ?? this.moveCount;
 
-    // Flash all tiles
+    // Flash all tiles with victory pulse
     for (const sprite of this.tileSprites) {
       this.tweens.add({
         targets: sprite.container,
-        scaleX: 1.15, scaleY: 1.15,
-        duration: 200,
+        scaleX: 1.18, scaleY: 1.18,
+        duration: 220,
         yoyo: true,
         ease: 'Sine.InOut',
       });
     }
+
+    // Celebratory Confetti Burst (Commercial Game Juice)
+    this.spawnConfetti(50);
 
     // Short delay then show victory scene
     this.time.delayedCall(500, () => {
@@ -1264,6 +1294,49 @@ export class GameScene extends Phaser.Scene {
       this.scene.launch(SCENE.VICTORY, data);
       this.scene.pause(SCENE.GAME);
     });
+  }
+
+  private spawnConfetti(count = 45) {
+    const { width, height } = this.scale;
+    const sf = this.scaleFactor;
+    const colors = [0x00d4aa, 0x00ffcc, 0xf5a623, 0xff3366, 0x3399ff, 0xffffff];
+
+    for (let i = 0; i < count; i++) {
+      const startX = width / 2 + Phaser.Math.Between(-100 * sf, 100 * sf);
+      const startY = height / 2 + Phaser.Math.Between(-50 * sf, 50 * sf);
+      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
+      const w = Phaser.Math.Between(6, 12) * sf;
+      const h = Phaser.Math.Between(4, 8) * sf;
+
+      const piece = this.add.rectangle(startX, startY, w, h, color)
+        .setAlpha(1)
+        .setDepth(30);
+
+      const targetX = startX + Phaser.Math.Between(-180 * sf, 180 * sf);
+      const targetY = startY - Phaser.Math.Between(100 * sf, 260 * sf);
+      const fallY = height + 30 * sf;
+
+      this.tweens.add({
+        targets: piece,
+        x: targetX,
+        y: targetY,
+        angle: Phaser.Math.Between(-180, 180),
+        duration: Phaser.Math.Between(400, 600),
+        ease: 'Cubic.Out',
+        onComplete: () => {
+          this.tweens.add({
+            targets: piece,
+            y: fallY,
+            x: targetX + Phaser.Math.Between(-40 * sf, 40 * sf),
+            angle: Phaser.Math.Between(-360, 360),
+            alpha: { from: 1, to: 0 },
+            duration: Phaser.Math.Between(1200, 1800),
+            ease: 'Sine.In',
+            onComplete: () => piece.destroy(),
+          });
+        },
+      });
+    }
   }
 
   private togglePause() {

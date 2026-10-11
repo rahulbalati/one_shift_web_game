@@ -1,6 +1,5 @@
 import Phaser from 'phaser';
 import {
-  BASE_WIDTH, BASE_HEIGHT,
   COLORS, SCENE,
   VICTORY_ANIM_DURATION,
 } from '../config.ts';
@@ -43,16 +42,17 @@ export class VictoryScene extends Phaser.Scene {
     } catch (_) {}
 
     const { width, height } = this.scale;
-    const sf = Math.min(width / BASE_WIDTH, height / BASE_HEIGHT, 1.4);
+    const isLandscape = width > height;
+    const sf = Math.min(width / (isLandscape ? 560 : 420), height / 560, 1.8);
     this.scaleFactor = sf;
 
     // Dim overlay
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0).setOrigin(0);
-    this.tweens.add({ targets: overlay, fillAlpha: 0.75, duration: 400 });
+    this.tweens.add({ targets: overlay, fillAlpha: 0.78, duration: 400 });
 
     // Panel
-    const panW = Math.min(340 * sf, width - 40 * sf);
-    const panH = 360 * sf;
+    const panW = Math.min(350 * sf, width - 40 * sf);
+    const panH = 370 * sf;
     const panX = width / 2;
     const panY = height / 2;
 
