@@ -190,15 +190,55 @@ export class BootScene extends Phaser.Scene {
       sounds.resume();
       sounds.playClick();
       playBtnContainer.off('pointerdown', startGame);
-      this.input.off('pointerdown', startGame);
       if (this.input.keyboard) this.input.keyboard.off('keydown', startGame);
       this.scene.start(SCENE.GAME, { level: startLevel });
     };
 
     playBtnContainer.on('pointerdown', startGame);
-    this.input.once('pointerdown', startGame);
+
+    // ─── Daily Challenge Button (Phase 5 Retention Loop) ────────────────────────
+    const streak = parseInt(crazyGames.getItem('oneshift_daily_streak') || '0', 10);
+    const dailyBtnW = Math.min(230 * sf, width - 60);
+    const dailyBtnH = 42 * sf;
+    const dailyBtnY = cy + 192 * sf;
+
+    const dailyBtnBg = this.add.rectangle(0, 0, dailyBtnW, dailyBtnH, COLORS.panelBg)
+      .setStrokeStyle(1.5, COLORS.warning);
+    const dailyLabel = streak > 0 ? `📅 DAILY PUZZLE (🔥 ${streak})` : '📅 DAILY PUZZLE';
+    const dailyBtnTxt = this.add.text(0, 0, dailyLabel, {
+      fontSize: `${Math.round(14 * sf)}px`,
+      fontFamily: font,
+      fontStyle: 'bold',
+      resolution: dpr,
+      color: '#f5a623',
+    }).setOrigin(0.5);
+
+    const dailyBtnContainer = this.add.container(cx, dailyBtnY, [dailyBtnBg, dailyBtnTxt]);
+    dailyBtnContainer.setSize(dailyBtnW, dailyBtnH);
+    dailyBtnContainer.setInteractive({ useHandCursor: true });
+
+    dailyBtnContainer.on('pointerover', () => {
+      dailyBtnBg.setFillStyle(0x1a2550);
+      this.tweens.add({ targets: dailyBtnContainer, scaleX: 1.05, scaleY: 1.05, duration: 80 });
+    });
+    dailyBtnContainer.on('pointerout', () => {
+      dailyBtnBg.setFillStyle(COLORS.panelBg);
+      this.tweens.add({ targets: dailyBtnContainer, scaleX: 1.0, scaleY: 1.0, duration: 80 });
+    });
+
+    const startDaily = () => {
+      if (started) return;
+      started = true;
+      sounds.resume();
+      sounds.playClick();
+      this.scene.start(SCENE.GAME, { isDaily: true });
+    };
+
+    dailyBtnContainer.on('pointerdown', startDaily);
+
     if (this.input.keyboard) {
-      this.input.keyboard.once('keydown', startGame);
+      this.input.keyboard.once('keydown-SPACE', startGame);
+      this.input.keyboard.once('keydown-ENTER', startGame);
     }
 
     // Resize listener

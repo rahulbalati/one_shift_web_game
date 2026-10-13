@@ -19,6 +19,8 @@ export interface VictoryData {
   moves: number;
   elapsedSeconds: number;
   bestMoves: number | null;
+  isDaily?: boolean;
+  streak?: number;
 }
 
 // Per-level session data

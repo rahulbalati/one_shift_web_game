@@ -16,30 +16,38 @@ export class VictoryScene extends Phaser.Scene {
     super({ key: SCENE.VICTORY });
   }
 
-  init(data: VictoryData) {
-    this.victoryData = data;
+  init(data?: VictoryData) {
+    this.victoryData = data || {
+      level: 1,
+      moves: 1,
+      elapsedSeconds: 15,
+      bestMoves: 1,
+    };
   }
 
   create() {
     triggerHaptic([40, 60, 40]);
+    const isDaily = !!this.victoryData.isDaily;
     const lvl = this.victoryData.level;
     const nextLvl = lvl + 1;
-    try {
-      // 1. Update max unlocked level
-      const currentMax = parseInt(crazyGames.getItem('oneshift_max_unlocked') || '1', 10);
-      const newMax = Math.max(isNaN(currentMax) ? 1 : currentMax, nextLvl);
-      crazyGames.setItem('oneshift_max_unlocked', String(newMax));
+    if (!isDaily) {
+      try {
+        // 1. Update max unlocked level
+        const currentMax = parseInt(crazyGames.getItem('oneshift_max_unlocked') || '1', 10);
+        const newMax = Math.max(isNaN(currentMax) ? 1 : currentMax, nextLvl);
+        crazyGames.setItem('oneshift_max_unlocked', String(newMax));
 
-      // 2. Update current level pointer
-      crazyGames.setItem('oneshift_current_level', String(nextLvl));
+        // 2. Update current level pointer
+        crazyGames.setItem('oneshift_current_level', String(nextLvl));
 
-      // 3. Update personal best moves for this level
-      const savedBest = crazyGames.getItem('oneshift_best_lvl_' + lvl);
-      const prevBest = savedBest ? parseInt(savedBest, 10) : null;
-      if (prevBest === null || this.victoryData.moves < prevBest) {
-        crazyGames.setItem('oneshift_best_lvl_' + lvl, String(this.victoryData.moves));
-      }
-    } catch (_) {}
+        // 3. Update personal best moves for this level
+        const savedBest = crazyGames.getItem('oneshift_best_lvl_' + lvl);
+        const prevBest = savedBest ? parseInt(savedBest, 10) : null;
+        if (prevBest === null || this.victoryData.moves < prevBest) {
+          crazyGames.setItem('oneshift_best_lvl_' + lvl, String(this.victoryData.moves));
+        }
+      } catch (_) {}
+    }
 
     const width = 460;
     const height = 760;
@@ -125,8 +133,13 @@ export class VictoryScene extends Phaser.Scene {
       return t;
     };
 
-    addText('PUZZLE SOLVED!', -110, 24, COLORS.accent, 350, 'bold');
-    addText(`Level ${this.victoryData.level}`, -76, 14, COLORS.textMuted, 400);
+    if (isDaily) {
+      addText('DAILY PUZZLE SOLVED!', -110, 22, COLORS.accent, 350, 'bold');
+      addText(`🔥 ${this.victoryData.streak ?? 1} Day Streak Active!`, -76, 14, COLORS.warning, 400, 'bold');
+    } else {
+      addText('PUZZLE SOLVED!', -110, 24, COLORS.accent, 350, 'bold');
+      addText(`Level ${this.victoryData.level}`, -76, 14, COLORS.textMuted, 400);
+    }
 
     // Divider
     const div = this.add.graphics().setAlpha(0);
@@ -141,20 +154,23 @@ export class VictoryScene extends Phaser.Scene {
     const s = this.victoryData.elapsedSeconds;
     addText(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`, 40, 26, COLORS.text, 550, 'bold');
 
-    if (this.victoryData.bestMoves != null && this.victoryData.moves <= this.victoryData.bestMoves) {
+    if (!isDaily && this.victoryData.bestMoves != null && this.victoryData.moves <= this.victoryData.bestMoves) {
       addText('🏆 New Best Record!', 78, 14, COLORS.warning, 600, 'bold');
-    } else if (this.victoryData.bestMoves != null) {
+    } else if (!isDaily && this.victoryData.bestMoves != null) {
       addText(`Best: ${this.victoryData.bestMoves}`, 78, 12, COLORS.textMuted, 600);
+    } else if (isDaily) {
+      addText('Come back tomorrow for a new shift!', 78, 12, COLORS.textMuted, 600);
     }
 
-    // Next Level button
-    const btnW = 160 * sf;
+    // Next Level / Continue button
+    const btnW = 168 * sf;
     const btnH = 48 * sf;
     const btnY = panY + 130 * sf;
 
     const btnBg = this.add.rectangle(0, 0, btnW, btnH, COLORS.accent)
       .setOrigin(0.5);
-    const btnTxt = this.add.text(0, 0, '→ Next Level', {
+    const btnLabel = isDaily ? '▶ Play Levels' : '→ Next Level';
+    const btnTxt = this.add.text(0, 0, btnLabel, {
       fontSize: `${Math.round(16 * sf)}px`,
       fontFamily: font,
       fontStyle: 'bold',
@@ -270,6 +286,11 @@ export class VictoryScene extends Phaser.Scene {
     this.scene.stop(SCENE.VICTORY);
     this.scene.resume(SCENE.GAME);
     this.scene.stop(SCENE.GAME);
-    this.scene.start(SCENE.GAME, { level: this.victoryData.level + 1 });
+    if (this.victoryData.isDaily) {
+      const savedLevel = parseInt(crazyGames.getItem('oneshift_current_level') || '1', 10);
+      this.scene.start(SCENE.GAME, { level: isNaN(savedLevel) ? 1 : savedLevel });
+    } else {
+      this.scene.start(SCENE.GAME, { level: this.victoryData.level + 1 });
+    }
   }
 }
