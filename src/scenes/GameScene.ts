@@ -38,6 +38,7 @@ export class GameScene extends Phaser.Scene {
   private board!: Board;
   private scrambledBoard!: Board;
   private moveHistory: MoveRecord[] = [];
+  private boardHistory: Board[] = [];
   private moveCount = 0;
   private level = 1;
   private isDailyMode = false;
@@ -134,6 +135,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedCol = 0;
     this.board = data.board ? cloneBoard(data.board) : (undefined as unknown as Board);
     this.scrambledBoard = data.scrambledBoard ? cloneBoard(data.scrambledBoard) : (undefined as unknown as Board);
+    this.boardHistory = data.board ? [cloneBoard(data.board)] : [];
   }
 
   create() {
@@ -1002,8 +1004,7 @@ export class GameScene extends Phaser.Scene {
   private doHint() {
     if (this.animating || this.paused) return;
     sounds.playClick();
-    const lastMove = this.moveHistory.length > 0 ? this.moveHistory[this.moveHistory.length - 1] : null;
-    const hintMove = findHintMove(this.board, lastMove);
+    const hintMove = findHintMove(this.board, this.moveHistory.slice(-6), this.boardHistory.slice(-8));
     if (!hintMove) {
       this.showToast('🎉 Already Solved!');
       return;
@@ -1099,8 +1100,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    const lastMove = this.moveHistory.length > 0 ? this.moveHistory[this.moveHistory.length - 1] : null;
-    const hint = findHintMove(this.board, lastMove);
+    const hint = findHintMove(this.board, this.moveHistory.slice(-6), this.boardHistory.slice(-8));
     if (!hint) return;
 
     const dirSym = hint.direction === 'left' ? '←' : hint.direction === 'right' ? '→' : hint.direction === 'up' ? '↑' : '↓';
@@ -1378,6 +1378,8 @@ export class GameScene extends Phaser.Scene {
     this.animating = true;
     this.animateShift(type, index, direction, newBoard, () => {
       this.board = newBoard;
+      this.boardHistory.push(cloneBoard(newBoard));
+      if (this.boardHistory.length > 15) this.boardHistory.shift();
       this.moveHistory.push(move);
       this.moveCount++;
       this.movesText.setText(String(this.moveCount));
@@ -1584,6 +1586,8 @@ export class GameScene extends Phaser.Scene {
     this.animating = true;
     this.animateShift(undoMove.type, undoMove.index, undoMove.direction, newBoard, () => {
       this.board = newBoard;
+      this.boardHistory.push(cloneBoard(newBoard));
+      if (this.boardHistory.length > 15) this.boardHistory.shift();
       this.moveCount = Math.max(0, this.moveCount - 1);
       this.movesText.setText(String(this.moveCount));
       this.updateParStars();
@@ -1602,6 +1606,7 @@ export class GameScene extends Phaser.Scene {
   private doRestart() {
     if (this.animating) return;
     this.board = cloneBoard(this.scrambledBoard);
+    this.boardHistory = [cloneBoard(this.scrambledBoard)];
     this.moveCount = 0;
     this.moveHistory = [];
     this.startTime = Date.now();
