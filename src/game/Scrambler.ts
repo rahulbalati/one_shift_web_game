@@ -72,12 +72,12 @@ export function scramble(level: number): ScrambleResult {
 
   // ─── Level 2: Deterministic 2-Shift Tutorial ──────────────────────────────
   // Teaches both Columns and Rows:
-  // Move 1: Column 0 shifted DOWN
-  // Move 2: Row 0 shifted RIGHT
-  // Solving order: Row 0 LEFT, then Col 0 UP!
+  // Move 1: Row 0 shifted RIGHT
+  // Move 2: Column 0 shifted DOWN
+  // Solving order: Col 0 UP (Step 1, solves all columns!), then Row 0 LEFT (Step 2, solves board!)
   if (level === 2) {
-    const m1: MoveRecord = { type: 'col', index: 0, direction: 'down' };
-    const m2: MoveRecord = { type: 'row', index: 0, direction: 'right' };
+    const m1: MoveRecord = { type: 'row', index: 0, direction: 'right' };
+    const m2: MoveRecord = { type: 'col', index: 0, direction: 'down' };
     let b = applyMove(solvedBoard(), m1);
     b = applyMove(b, m2);
     return {
@@ -176,10 +176,30 @@ export function scrambleDaily(dateStr: string): ScrambleResult {
 }
 
 /**
- * Lightweight Breadth-First-Search (BFS) Solver for the Hint System.
- * Explores 1-3 depth moves in <2ms to find the shortest winning move from any state.
+ * Calculates total Toroidal Manhattan Distance of the board towards the solved target.
  */
-export function findHintMove(currentBoard: Board): MoveRecord | null {
+export function toroidalDistance(board: Board): number {
+  let total = 0;
+  for (let idx = 0; idx < board.length; idx++) {
+    const val = board[idx];
+    const targetR = Math.floor((val - 1) / GRID_SIZE);
+    const targetC = (val - 1) % GRID_SIZE;
+    const currR = Math.floor(idx / GRID_SIZE);
+    const currC = idx % GRID_SIZE;
+    const dr = Math.abs(currR - targetR);
+    const dc = Math.abs(currC - targetC);
+    total += Math.min(dr, GRID_SIZE - dr) + Math.min(dc, GRID_SIZE - dc);
+  }
+  return total;
+}
+
+/**
+ * Robust Breadth-First-Search (BFS) + Toroidal Distance Solver for the Hint System.
+ * - Explores depth 1-3 to find guaranteed shortest winning move.
+ * - When >3 moves from victory, uses 2-step lookahead Toroidal Manhattan Distance.
+ * - Prevents immediate opposite cycles by filtering against `lastMove`.
+ */
+export function findHintMove(currentBoard: Board, lastMove?: MoveRecord | null): MoveRecord | null {
   if (isSolved(currentBoard)) return null;
 
   const ALL_MOVES: MoveRecord[] = [];
@@ -190,14 +210,15 @@ export function findHintMove(currentBoard: Board): MoveRecord | null {
     ALL_MOVES.push({ type: 'col', index: i, direction: 'down' });
   }
 
-  // Depth 1 check
+  // Depth 1 check (immediate win)
   for (const m1 of ALL_MOVES) {
     const b1 = applyMove(currentBoard, m1);
     if (isSolved(b1)) return m1;
   }
 
-  // Depth 2 check
+  // Depth 2 check (2 moves to win)
   for (const m1 of ALL_MOVES) {
+    if (lastMove && isOpposite(m1, lastMove)) continue;
     const b1 = applyMove(currentBoard, m1);
     for (const m2 of ALL_MOVES) {
       if (isOpposite(m1, m2)) continue;
@@ -206,8 +227,9 @@ export function findHintMove(currentBoard: Board): MoveRecord | null {
     }
   }
 
-  // Depth 3 check
+  // Depth 3 check (3 moves to win)
   for (const m1 of ALL_MOVES) {
+    if (lastMove && isOpposite(m1, lastMove)) continue;
     const b1 = applyMove(currentBoard, m1);
     for (const m2 of ALL_MOVES) {
       if (isOpposite(m1, m2)) continue;
@@ -220,18 +242,41 @@ export function findHintMove(currentBoard: Board): MoveRecord | null {
     }
   }
 
-  // Fallback: move that maximizes correctly placed tiles
+  // Heuristic Fallback for deep states (>= 4 moves):
+  // Evaluates which initial move m1 leads to the minimal 2-step Toroidal Manhattan Distance,
+  // strictly excluding opposite reversals of lastMove.
   let bestMove: MoveRecord | null = null;
-  let maxCorrect = -1;
-  for (const m of ALL_MOVES) {
-    const b = applyMove(currentBoard, m);
-    let correct = 0;
-    for (let i = 0; i < b.length; i++) {
-      if (b[i] === i + 1) correct++;
+  let minDistance = Infinity;
+
+  for (const m1 of ALL_MOVES) {
+    if (lastMove && isOpposite(m1, lastMove)) continue;
+    const b1 = applyMove(currentBoard, m1);
+    let bestB1Dist = toroidalDistance(b1);
+
+    for (const m2 of ALL_MOVES) {
+      if (isOpposite(m1, m2)) continue;
+      const b2 = applyMove(b1, m2);
+      const d2 = toroidalDistance(b2);
+      if (d2 < bestB1Dist) {
+        bestB1Dist = d2;
+      }
     }
-    if (correct > maxCorrect) {
-      maxCorrect = correct;
-      bestMove = m;
+
+    if (bestB1Dist < minDistance) {
+      minDistance = bestB1Dist;
+      bestMove = m1;
+    }
+  }
+
+  // If all non-opposite moves were somehow filtered, fall back to any move that minimizes distance
+  if (!bestMove) {
+    for (const m of ALL_MOVES) {
+      const b = applyMove(currentBoard, m);
+      const d = toroidalDistance(b);
+      if (d < minDistance) {
+        minDistance = d;
+        bestMove = m;
+      }
     }
   }
 

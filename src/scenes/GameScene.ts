@@ -88,10 +88,8 @@ export class GameScene extends Phaser.Scene {
   private tutorialContainer: Phaser.GameObjects.Container | null = null;
   private tutorialTitleText: Phaser.GameObjects.Text | null = null;
   private tutorialActionText: Phaser.GameObjects.Text | null = null;
-  private tutorialSubText: Phaser.GameObjects.Text | null = null;
   private tutorialPointer: Phaser.GameObjects.Text | null = null;
   private tutorialPointerTween: Phaser.Tweens.Tween | null = null;
-  private tutorialTapTag: Phaser.GameObjects.Text | null = null;
   private tutorialSwipeHand: Phaser.GameObjects.Text | null = null;
   private tutorialSwipeTween: Phaser.Tweens.Tween | null = null;
 
@@ -122,7 +120,7 @@ export class GameScene extends Phaser.Scene {
   } = {}) {
     this.level = data.level ?? 1;
     this.isDailyMode = data.isDaily ?? false;
-    this.tutorialStep = 1;
+    this.tutorialStep = (this.level <= 2 && !this.isDailyMode) ? 1 : 0;
     this.moveCount = data.moveCount ?? 0;
     this.moveHistory = data.moveHistory ? [...data.moveHistory] : [];
     this.startTime = data.startTime ?? 0;
@@ -153,7 +151,11 @@ export class GameScene extends Phaser.Scene {
     this.setupKeyboard();
     this.setupSwipeControls();
     this.setupVisibilityHandling();
-    this.createTutorialHint();
+    if (this.level <= 2 && !this.isDailyMode) {
+      this.createTutorialHint();
+    } else {
+      this.dismissTutorialImmediate();
+    }
     this.startTimer();
     crazyGames.gameplayStart();
 
@@ -1000,7 +1002,8 @@ export class GameScene extends Phaser.Scene {
   private doHint() {
     if (this.animating || this.paused) return;
     sounds.playClick();
-    const hintMove = findHintMove(this.board);
+    const lastMove = this.moveHistory.length > 0 ? this.moveHistory[this.moveHistory.length - 1] : null;
+    const hintMove = findHintMove(this.board, lastMove);
     if (!hintMove) {
       this.showToast('🎉 Already Solved!');
       return;
@@ -1012,152 +1015,53 @@ export class GameScene extends Phaser.Scene {
     triggerHaptic(20);
   }
 
-  // ─── Onboarding Tutorial ────────────────────────────────────────────────────
+  // ─── Onboarding Tutorial (Levels 1 & 2 Only) ────────────────────────────────
   private createTutorialHint() {
-    if (this.level > 2 || this.isDailyMode) return;
+    if (this.level > 2 || this.isDailyMode) {
+      this.dismissTutorialImmediate();
+      return;
+    }
     this.dismissTutorialImmediate();
 
     const sf = this.scaleFactor;
-    const gridX = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY = GRID_Y * sf;
-    const tileSize = TILE_SIZE * sf;
-    const arrowSize = ARROW_SIZE * sf;
-    const arrowMrg = ARROW_MARGIN * sf;
     const cx = this.scale.width / 2;
     const items: Phaser.GameObjects.GameObject[] = [];
 
-    // ── Top Tutorial Card ──────────────────────────────────────────────────
-    const bannerY = 168 * sf;
-    const bannerW = Math.min(410 * sf, this.scale.width - 24);
-    const bannerH = 50 * sf;
+    // Compact Top Tutorial Card (positioned between HUD stats and top arrows)
+    const bannerY = 160 * sf;
+    const bannerW = Math.min(380 * sf, this.scale.width - 28);
+    const bannerH = 44 * sf;
 
     const bannerBg = this.add.rectangle(cx, bannerY, bannerW, bannerH, COLORS.panelBg, 0.96)
       .setStrokeStyle(1.8, COLORS.accent);
 
     let titleStr = '';
     let actionStr = '';
-    let subStr = '';
 
     if (this.level === 1) {
       titleStr  = 'TUTORIAL: HOW ARROW BUTTONS WORK';
       actionStr = '👉 Tap Flashing Arrow [←]  OR  Swipe Row 1 Left 👈';
-      subStr    = 'Arrow buttons slide rows & columns! Tiles loop around.';
-      this.highlightArrow('row', 0, 'left');
     } else if (this.level === 2) {
       this.tutorialStep = 1;
-      titleStr  = 'TUTORIAL: 2D COLUMN SHIFTS (Step 1 of 2)';
+      titleStr  = 'TUTORIAL: COLUMN SHIFTS (Step 1 of 2)';
       actionStr = '👉 Tap Top Arrow [↑]  OR  Swipe Col 1 Up 👆';
-      subStr    = 'Columns wrap vertically, just like rows wrap horizontally!';
-      this.highlightArrow('col', 0, 'up');
     }
 
-    this.tutorialTitleText = this.createText(cx, bannerY - 14 * sf, titleStr, {
+    this.tutorialTitleText = this.createText(cx, bannerY - 11 * sf, titleStr, {
       fontSize: `${Math.round(11 * sf)}px`,
       fontStyle: 'bold',
       color: '#f5a623',
     }).setOrigin(0.5);
 
-    this.tutorialActionText = this.createText(cx, bannerY + 1 * sf, actionStr, {
+    this.tutorialActionText = this.createText(cx, bannerY + 8 * sf, actionStr, {
       fontSize: `${Math.round(12 * sf)}px`,
       fontStyle: 'bold',
       color: '#ffffff',
     }).setOrigin(0.5);
 
-    this.tutorialSubText = this.createText(cx, bannerY + 16 * sf, subStr, {
-      fontSize: `${Math.round(9.5 * sf)}px`,
-      color: '#00ffcc',
-    }).setOrigin(0.5);
+    items.push(bannerBg, this.tutorialTitleText, this.tutorialActionText);
 
-    items.push(bannerBg, this.tutorialTitleText, this.tutorialActionText, this.tutorialSubText);
-
-    // ── Animated Pointer Indicators ────────────────────────────────────────
-    if (this.level === 1) {
-      // Pointer finger bouncing into Left Arrow [←]
-      const arrowX = gridX - arrowMrg - arrowSize / 2;
-      const arrowY = gridY + tileSize / 2;
-
-      const ptr = this.createText(arrowX - 24 * sf, arrowY, '👉', {
-        fontSize: `${Math.round(24 * sf)}px`,
-      }).setOrigin(0.5);
-
-      this.tutorialPointer = ptr;
-      this.tutorialPointerTween = this.tweens.add({
-        targets: ptr,
-        x: { from: arrowX - 28 * sf, to: arrowX - 18 * sf },
-        duration: 480,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.InOut',
-      });
-
-      const tag = this.createText(arrowX, arrowY - 25 * sf, 'TAP [←]', {
-        fontSize: `${Math.round(9 * sf)}px`,
-        fontStyle: 'bold',
-        color: '#00ffcc',
-      }).setOrigin(0.5);
-      this.tutorialTapTag = tag;
-
-      // Swipe trail hand on Row 0
-      const swipeH = this.createText(gridX + tileSize * 3, arrowY, '👈', {
-        fontSize: `${Math.round(20 * sf)}px`,
-      }).setOrigin(0.5).setAlpha(0.75);
-
-      this.tutorialSwipeHand = swipeH;
-      this.tutorialSwipeTween = this.tweens.add({
-        targets: swipeH,
-        x: { from: gridX + tileSize * 3, to: gridX + tileSize * 0.6 },
-        alpha: { from: 0.85, to: 0.1 },
-        duration: 1500,
-        repeat: -1,
-        ease: 'Cubic.InOut',
-      });
-
-      items.push(ptr, tag, swipeH);
-    } else if (this.level === 2) {
-      // Pointer finger bouncing down into Top Arrow [↑]
-      const arrowX = gridX + tileSize / 2;
-      const arrowY = gridY - arrowMrg - arrowSize / 2;
-
-      const ptr = this.createText(arrowX, arrowY - 24 * sf, '👇', {
-        fontSize: `${Math.round(24 * sf)}px`,
-      }).setOrigin(0.5);
-
-      this.tutorialPointer = ptr;
-      this.tutorialPointerTween = this.tweens.add({
-        targets: ptr,
-        y: { from: arrowY - 28 * sf, to: arrowY - 18 * sf },
-        duration: 480,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.InOut',
-      });
-
-      const tag = this.createText(arrowX, arrowY - 37 * sf, 'TAP [↑]', {
-        fontSize: `${Math.round(9 * sf)}px`,
-        fontStyle: 'bold',
-        color: '#00ffcc',
-      }).setOrigin(0.5);
-      this.tutorialTapTag = tag;
-
-      // Swipe trail hand on Col 0
-      const swipeH = this.createText(arrowX, gridY + tileSize * 3, '👆', {
-        fontSize: `${Math.round(20 * sf)}px`,
-      }).setOrigin(0.5).setAlpha(0.75);
-
-      this.tutorialSwipeHand = swipeH;
-      this.tutorialSwipeTween = this.tweens.add({
-        targets: swipeH,
-        y: { from: gridY + tileSize * 3, to: gridY + tileSize * 0.6 },
-        alpha: { from: 0.85, to: 0.1 },
-        duration: 1500,
-        repeat: -1,
-        ease: 'Cubic.InOut',
-      });
-
-      items.push(ptr, tag, swipeH);
-    }
-
-    // ── Skip Tutorial Button ────────────────────────────────────────────────
+    // Skip Tutorial Button (Only visible on Levels 1 & 2)
     const skipY = 744 * sf;
     const skipBtn = this.createText(cx, skipY, '⏭ Skip Tutorial (Start Level 3)', {
       fontSize: `${Math.round(12 * sf)}px`,
@@ -1167,94 +1071,201 @@ export class GameScene extends Phaser.Scene {
 
     skipBtn.on('pointerdown', () => {
       sounds.playClick();
-      this.dismissTutorial();
+      this.dismissTutorialImmediate();
       this.goToLevel(3);
     });
 
     items.push(skipBtn);
     this.tutorialContainer = this.add.container(0, 0, items);
     this.tutorialContainer.setDepth(20);
+
+    // Position initial pointer and beam for the level's first move
+    if (this.level === 1) {
+      this.highlightArrow('row', 0, 'left');
+      this.syncTutorialPointer('row', 0, 'left');
+    } else if (this.level === 2) {
+      this.highlightArrow('col', 0, 'up');
+      this.syncTutorialPointer('col', 0, 'up');
+    }
   }
 
   private updateTutorialGuidance() {
-    if (this.level > 2 || this.isDailyMode) return;
+    if (this.level > 2 || this.isDailyMode) {
+      this.dismissTutorialImmediate();
+      return;
+    }
     if (isSolved(this.board)) {
-      this.dismissTutorial();
+      this.dismissTutorialImmediate();
       return;
     }
 
-    const hint = findHintMove(this.board);
+    const lastMove = this.moveHistory.length > 0 ? this.moveHistory[this.moveHistory.length - 1] : null;
+    const hint = findHintMove(this.board, lastMove);
     if (!hint) return;
-
-    const sf = this.scaleFactor;
-    const gridX = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY = GRID_Y * sf;
-    const tileSize = TILE_SIZE * sf;
-    const arrowSize = ARROW_SIZE * sf;
-    const arrowMrg = ARROW_MARGIN * sf;
 
     const dirSym = hint.direction === 'left' ? '←' : hint.direction === 'right' ? '→' : hint.direction === 'up' ? '↑' : '↓';
     const targetName = hint.type === 'row' ? `Row ${hint.index + 1}` : `Col ${hint.index + 1}`;
     const dirUpper = hint.direction.toUpperCase();
 
     this.highlightArrow(hint.type, hint.index, hint.direction);
+    this.syncTutorialPointer(hint.type, hint.index, hint.direction);
 
     if (this.level === 1) {
       if (hint.type === 'row' && hint.index === 0 && hint.direction === 'left') {
         this.tutorialTitleText?.setText('TUTORIAL: HOW ARROW BUTTONS WORK');
         this.tutorialActionText?.setText('👉 Tap Flashing Arrow [←]  OR  Swipe Row 1 Left 👈');
-        this.tutorialSubText?.setText('Arrow buttons slide rows & columns! Tiles loop around.');
       } else {
-        this.tutorialTitleText?.setText('TUTORIAL: GETTING BACK ON TRACK');
+        this.tutorialTitleText?.setText('TUTORIAL: HOW ARROW BUTTONS WORK');
         this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper}`);
-        this.tutorialSubText?.setText('Tap ↩ Undo anytime to reverse an accidental move!');
       }
     } else if (this.level === 2) {
-      // Test if hint move solves in 1 step (means Step 2)
       const nextBoard = applyMove(this.board, hint);
       if (isSolved(nextBoard) || this.tutorialStep === 2) {
         this.tutorialStep = 2;
         this.tutorialTitleText?.setText('PERFECT! NOW FINISH (Step 2 of 2)');
         this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper} 👈`);
-        this.tutorialSubText?.setText('Align tiles 1 to 4 to complete Level 2!');
-
-        // Update pointer to row 0 left arrow
-        if (this.tutorialPointer && hint.type === 'row') {
-          const arrowX = gridX - arrowMrg - arrowSize / 2;
-          const arrowY = gridY + hint.index * (tileSize + TILE_GAP * sf) + tileSize / 2;
-          this.tutorialPointerTween?.stop();
-          this.tutorialPointer.setText('👉');
-          this.tutorialPointer.setPosition(arrowX - 24 * sf, arrowY);
-          this.tutorialPointerTween = this.tweens.add({
-            targets: this.tutorialPointer,
-            x: { from: arrowX - 28 * sf, to: arrowX - 18 * sf },
-            duration: 480,
-            yoyo: true,
-            repeat: -1,
-            ease: 'Sine.InOut',
-          });
-          if (this.tutorialTapTag) {
-            this.tutorialTapTag.setPosition(arrowX, arrowY - 25 * sf);
-            this.tutorialTapTag.setText(`TAP [${dirSym}]`);
-          }
-          if (this.tutorialSwipeHand) {
-            this.tutorialSwipeTween?.stop();
-            this.tutorialSwipeHand.setText('👈');
-            this.tutorialSwipeHand.setPosition(gridX + tileSize * 3, arrowY);
-            this.tutorialSwipeTween = this.tweens.add({
-              targets: this.tutorialSwipeHand,
-              x: { from: gridX + tileSize * 3, to: gridX + tileSize * 0.6 },
-              alpha: { from: 0.85, to: 0.1 },
-              duration: 1500,
-              repeat: -1,
-              ease: 'Cubic.InOut',
-            });
-          }
-        }
       } else {
         this.tutorialTitleText?.setText('TUTORIAL: GUIDED SOLVE');
         this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper}`);
-        this.tutorialSubText?.setText('Tap ↩ Undo anytime to take back your last move.');
+      }
+    }
+  }
+
+  private syncTutorialPointer(type: 'row' | 'col', index: number, direction: ShiftDirection) {
+    if (!this.tutorialContainer || this.level > 2 || this.isDailyMode) return;
+
+    if (this.tutorialPointerTween) {
+      this.tutorialPointerTween.stop();
+      this.tutorialPointerTween = null;
+    }
+    if (this.tutorialSwipeTween) {
+      this.tutorialSwipeTween.stop();
+      this.tutorialSwipeTween = null;
+    }
+
+    const sf = this.scaleFactor;
+    const gridX = (this.scale.width - GRID_TOTAL * sf) / 2;
+    const gridY = GRID_Y * sf;
+    const tileSize = TILE_SIZE * sf;
+    const tileGap = TILE_GAP * sf;
+    const arrowSize = ARROW_SIZE * sf;
+    const arrowMrg = ARROW_MARGIN * sf;
+    const gridSpan = GRID_TOTAL * sf;
+    const step = tileSize + tileGap;
+
+    if (!this.tutorialPointer) {
+      this.tutorialPointer = this.createText(0, 0, '👉', {
+        fontSize: `${Math.round(22 * sf)}px`,
+      }).setOrigin(0.5);
+      this.tutorialContainer.add(this.tutorialPointer);
+    }
+    if (!this.tutorialSwipeHand) {
+      this.tutorialSwipeHand = this.createText(0, 0, '👈', {
+        fontSize: `${Math.round(20 * sf)}px`,
+      }).setOrigin(0.5).setAlpha(0.75);
+      this.tutorialContainer.add(this.tutorialSwipeHand);
+    }
+
+    this.tutorialPointer.setVisible(true);
+    this.tutorialSwipeHand.setVisible(true);
+
+    if (type === 'row') {
+      const rowY = gridY + index * step + tileSize / 2;
+      if (direction === 'left') {
+        const arrowX = gridX - arrowMrg - arrowSize / 2;
+        this.tutorialPointer.setText('👉');
+        this.tutorialPointer.setPosition(arrowX - 22 * sf, rowY);
+        this.tutorialPointerTween = this.tweens.add({
+          targets: this.tutorialPointer,
+          x: { from: arrowX - 26 * sf, to: arrowX - 16 * sf },
+          duration: 480,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+
+        this.tutorialSwipeHand.setText('👈');
+        this.tutorialSwipeHand.setPosition(gridX + tileSize * 3, rowY);
+        this.tutorialSwipeTween = this.tweens.add({
+          targets: this.tutorialSwipeHand,
+          x: { from: gridX + tileSize * 3, to: gridX + tileSize * 0.6 },
+          alpha: { from: 0.85, to: 0.1 },
+          duration: 1500,
+          repeat: -1,
+          ease: 'Cubic.InOut',
+        });
+      } else {
+        const arrowX = gridX + gridSpan + arrowMrg + arrowSize / 2;
+        this.tutorialPointer.setText('👈');
+        this.tutorialPointer.setPosition(arrowX + 22 * sf, rowY);
+        this.tutorialPointerTween = this.tweens.add({
+          targets: this.tutorialPointer,
+          x: { from: arrowX + 26 * sf, to: arrowX + 16 * sf },
+          duration: 480,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+
+        this.tutorialSwipeHand.setText('👉');
+        this.tutorialSwipeHand.setPosition(gridX + tileSize * 0.6, rowY);
+        this.tutorialSwipeTween = this.tweens.add({
+          targets: this.tutorialSwipeHand,
+          x: { from: gridX + tileSize * 0.6, to: gridX + tileSize * 3 },
+          alpha: { from: 0.85, to: 0.1 },
+          duration: 1500,
+          repeat: -1,
+          ease: 'Cubic.InOut',
+        });
+      }
+    } else {
+      const colX = gridX + index * step + tileSize / 2;
+      if (direction === 'up') {
+        const arrowY = gridY - arrowMrg - arrowSize / 2;
+        this.tutorialPointer.setText('👇');
+        this.tutorialPointer.setPosition(colX, arrowY - 18 * sf);
+        this.tutorialPointerTween = this.tweens.add({
+          targets: this.tutorialPointer,
+          y: { from: arrowY - 22 * sf, to: arrowY - 14 * sf },
+          duration: 480,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+
+        this.tutorialSwipeHand.setText('👆');
+        this.tutorialSwipeHand.setPosition(colX, gridY + tileSize * 3);
+        this.tutorialSwipeTween = this.tweens.add({
+          targets: this.tutorialSwipeHand,
+          y: { from: gridY + tileSize * 3, to: gridY + tileSize * 0.6 },
+          alpha: { from: 0.85, to: 0.1 },
+          duration: 1500,
+          repeat: -1,
+          ease: 'Cubic.InOut',
+        });
+      } else {
+        const arrowY = gridY + gridSpan + arrowMrg + arrowSize / 2;
+        this.tutorialPointer.setText('👆');
+        this.tutorialPointer.setPosition(colX, arrowY + 20 * sf);
+        this.tutorialPointerTween = this.tweens.add({
+          targets: this.tutorialPointer,
+          y: { from: arrowY + 24 * sf, to: arrowY + 16 * sf },
+          duration: 480,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+
+        this.tutorialSwipeHand.setText('👇');
+        this.tutorialSwipeHand.setPosition(colX, gridY + tileSize * 0.6);
+        this.tutorialSwipeTween = this.tweens.add({
+          targets: this.tutorialSwipeHand,
+          y: { from: gridY + tileSize * 0.6, to: gridY + tileSize * 3 },
+          alpha: { from: 0.85, to: 0.1 },
+          duration: 1500,
+          repeat: -1,
+          ease: 'Cubic.InOut',
+        });
       }
     }
   }
@@ -1275,32 +1286,8 @@ export class GameScene extends Phaser.Scene {
     }
     this.tutorialTitleText = null;
     this.tutorialActionText = null;
-    this.tutorialSubText = null;
     this.tutorialPointer = null;
-    this.tutorialTapTag = null;
     this.tutorialSwipeHand = null;
-  }
-
-  private dismissTutorial() {
-    this.clearArrowHighlight();
-    if (this.tutorialPointerTween) {
-      this.tutorialPointerTween.stop();
-      this.tutorialPointerTween = null;
-    }
-    if (this.tutorialSwipeTween) {
-      this.tutorialSwipeTween.stop();
-      this.tutorialSwipeTween = null;
-    }
-    if (this.tutorialContainer) {
-      this.tweens.add({
-        targets: this.tutorialContainer,
-        alpha: 0,
-        duration: 250,
-        onComplete: () => {
-          this.dismissTutorialImmediate();
-        },
-      });
-    }
   }
 
   // ─── Countdown Timer ────────────────────────────────────────────────────────
@@ -1425,11 +1412,13 @@ export class GameScene extends Phaser.Scene {
 
       if (isSolved(this.board)) {
         this.pendingMove = null;
-        this.dismissTutorial();
+        this.dismissTutorialImmediate();
         this.onVictory();
       } else {
         if (this.level <= 2 && !this.isDailyMode) {
           this.updateTutorialGuidance();
+        } else {
+          this.dismissTutorialImmediate();
         }
         if (this.pendingMove) {
           // Execute the buffered move immediately
@@ -1604,6 +1593,8 @@ export class GameScene extends Phaser.Scene {
       triggerHaptic(15);
       if (this.level <= 2 && !this.isDailyMode) {
         this.updateTutorialGuidance();
+      } else {
+        this.dismissTutorialImmediate();
       }
     });
   }
@@ -1624,6 +1615,8 @@ export class GameScene extends Phaser.Scene {
     if (this.level <= 2 && !this.isDailyMode) {
       this.tutorialStep = 1;
       this.createTutorialHint();
+    } else {
+      this.dismissTutorialImmediate();
     }
   }
 
@@ -1810,6 +1803,7 @@ export class GameScene extends Phaser.Scene {
   private onResize() {
     this.scene.restart({
       level: this.level,
+      isDaily: this.isDailyMode,
       board: this.board,
       scrambledBoard: this.scrambledBoard,
       moveHistory: this.moveHistory,
