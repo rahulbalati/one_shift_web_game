@@ -103,6 +103,16 @@ export class GameScene extends Phaser.Scene {
   private activePointerId: number | null = null;
   private pendingMove: MoveRecord | null = null;
 
+  // ─── Fix #3: O(1) sprite lookup (replaces tileSprites.find()) ──────────────
+  private tileMap: Map<number, TileSprite> = new Map();
+
+  // ─── Fix #7: Live drag-follow state ────────────────────────────────────────
+  private dragAxis: 'row' | 'col' | null = null;
+  private dragTileSprites: TileSprite[] = [];
+  private dragBaseX: number[] = [];
+  private dragBaseY: number[] = [];
+  private swipeHighlight: Phaser.GameObjects.Graphics | null = null;
+
   constructor() {
     super({ key: SCENE.GAME });
   }
@@ -196,14 +206,10 @@ export class GameScene extends Phaser.Scene {
     bg.fillGradientStyle(COLORS.bgDeep, COLORS.bgDeep, COLORS.bgPanel, COLORS.bgPanel, 1);
     bg.fillRect(0, 0, width, height);
 
-    // Subtle grid-pattern dots
-    const dots = this.add.graphics();
-    dots.fillStyle(0x1a2550, 0.4);
-    for (let x = 20; x < width; x += 40) {
-      for (let y = 20; y < height; y += 40) {
-        dots.fillCircle(x, y, 1);
-      }
-    }
+    // ─── Fix #6: Replace 209 fillCircle calls (6700 GPU vertices) with 1 glow ───
+    const glow = this.add.graphics();
+    glow.fillStyle(0x00d4aa, 0.025);
+    glow.fillCircle(width / 2, height / 2, Math.min(width, height) * 0.6);
   }
 
   // ─── High-DPI Text Helper ──────────────────────────────────────────────────
@@ -248,6 +254,7 @@ export class GameScene extends Phaser.Scene {
     ).setInteractive({ useHandCursor: true });
 
     this.tileSprites = [];
+    this.tileMap.clear(); // Fix #3: reset lookup map on each scene create
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const row = Math.floor(i / GRID_SIZE);
       const col = i % GRID_SIZE;
@@ -266,8 +273,9 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5);
 
       const container = this.add.container(x, y, [bg, label]);
-
-      this.tileSprites.push({ container, bg, label, value });
+      const tileSprite: TileSprite = { container, bg, label, value };
+      this.tileSprites.push(tileSprite);
+      this.tileMap.set(value, tileSprite); // Fix #3: O(1) map entry
     }
 
     this.refreshTileColors();
@@ -783,7 +791,6 @@ export class GameScene extends Phaser.Scene {
       const step     = tileSize + tileGap;
       const gridSpan = GRID_TOTAL * sf;
 
-      // Generous hitbox margin (+10px) so outer thumb swipes never fail
       const hitMargin = 10 * sf;
       const relX = pointer.x - gridX;
       const relY = pointer.y - gridY;
@@ -801,6 +808,14 @@ export class GameScene extends Phaser.Scene {
         this.swipeRow = r;
         this.swipeCol = c;
         this.isSwiping = true;
+        this.dragAxis = null;
+        this.dragTileSprites = [];
+        this.dragBaseX = [];
+        this.dragBaseY = [];
+
+        // ── Fix #4/#7: Immediate crosshair highlight + haptic on touch START ──
+        this.showSwipeHighlight(r, c);
+        triggerHaptic(8);
       }
     });
 
@@ -810,24 +825,40 @@ export class GameScene extends Phaser.Scene {
 
       const dx = pointer.x - this.swipeStartX;
       const dy = pointer.y - this.swipeStartY;
-      const sf = this.scaleFactor;
-      const threshold = 16 * sf;
-
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
 
-      // Trigger swipe immediately when finger crosses threshold with a clear dominant axis
+      // ── Fix #4: Axis-lock at 4px — before the old 16px dead zone ──
+      if (!this.dragAxis && (absX > 4 || absY > 4)) {
+        this.dragAxis = absX >= absY ? 'row' : 'col';
+        this.initDragPreview();
+      }
+
+      // ── Fix #7: Live drag-follow — tiles track the finger in real time ──
+      if (this.dragAxis && !this.animating) {
+        this.updateDragPreview(
+          this.dragAxis === 'row' ? dx : 0,
+          this.dragAxis === 'col' ? dy : 0,
+        );
+      }
+
+      // ── Fix #4: Threshold reduced from 16px → 8px ──
+      const threshold = 8;
       if (absX >= threshold || absY >= threshold) {
-        if (absX >= absY * 1.15) {
+        if (this.dragAxis === 'row' || absX >= absY * 1.15) {
+          this.clearDragPreview(false);
+          this.clearSwipeHighlight();
           this.isSwiping = false;
           this.activePointerId = null;
-          const dir: ShiftDirection = dx > 0 ? 'right' : 'left';
-          this.doShift('row', this.swipeRow, dir);
-        } else if (absY >= absX * 1.15) {
+          this.dragAxis = null;
+          this.doShift('row', this.swipeRow, dx > 0 ? 'right' : 'left');
+        } else if (this.dragAxis === 'col' || absY >= absX * 1.15) {
+          this.clearDragPreview(false);
+          this.clearSwipeHighlight();
           this.isSwiping = false;
           this.activePointerId = null;
-          const dir: ShiftDirection = dy > 0 ? 'down' : 'up';
-          this.doShift('col', this.swipeCol, dir);
+          this.dragAxis = null;
+          this.doShift('col', this.swipeCol, dy > 0 ? 'down' : 'up');
         }
       }
     });
@@ -836,42 +867,139 @@ export class GameScene extends Phaser.Scene {
       if (!this.isSwiping || pointer.id !== this.activePointerId) return;
       this.isSwiping = false;
       this.activePointerId = null;
+      this.clearSwipeHighlight();
 
-      if (this.paused) return;
+      if (this.paused) {
+        this.clearDragPreview(true);
+        this.dragAxis = null;
+        return;
+      }
 
       const dx = pointer.x - this.swipeStartX;
       const dy = pointer.y - this.swipeStartY;
-      const sf = this.scaleFactor;
-      const minDistance = 12 * sf; // Flick threshold on release
 
-      if (Math.abs(dx) < minDistance && Math.abs(dy) < minDistance) {
-        return; // Small tap, ignore
+      // Short tap — spring tiles back to base, no shift
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+        this.clearDragPreview(true);
+        this.dragAxis = null;
+        return;
       }
 
-      if (Math.abs(dx) >= Math.abs(dy)) {
-        // Horizontal swipe along this.swipeRow
-        const dir: ShiftDirection = dx > 0 ? 'right' : 'left';
-        this.doShift('row', this.swipeRow, dir);
+      // Flick release — commit the shift
+      this.clearDragPreview(false);
+      const prevAxis = this.dragAxis;
+      this.dragAxis = null;
+
+      if (prevAxis === 'row' || Math.abs(dx) >= Math.abs(dy)) {
+        this.doShift('row', this.swipeRow, dx > 0 ? 'right' : 'left');
       } else {
-        // Vertical swipe along this.swipeCol
-        const dir: ShiftDirection = dy > 0 ? 'down' : 'up';
-        this.doShift('col', this.swipeCol, dir);
+        this.doShift('col', this.swipeCol, dy > 0 ? 'down' : 'up');
       }
     };
 
     this.input.on('pointerup', handlePointerEnd);
     this.input.on('pointerupoutside', handlePointerEnd);
 
-    // Touch-Cancel & Blur protection (prevents stuck / frozen swipe states)
+    // Touch-Cancel & Blur — reset drag state cleanly
     this.input.on('pointercancel', () => {
+      this.clearDragPreview(true);
+      this.clearSwipeHighlight();
       this.isSwiping = false;
       this.activePointerId = null;
+      this.dragAxis = null;
     });
 
     this.game.events.on('blur', () => {
+      this.clearDragPreview(true);
+      this.clearSwipeHighlight();
       this.isSwiping = false;
       this.activePointerId = null;
+      this.dragAxis = null;
     });
+  }
+
+  // ─── Drag-follow helpers (Fix #7) ───────────────────────────────────────────
+
+  private showSwipeHighlight(row: number, col: number) {
+    this.clearSwipeHighlight();
+    if (this.animating) return;
+    const sf = this.scaleFactor;
+    const tileSize = TILE_SIZE * sf;
+    const tileGap  = TILE_GAP  * sf;
+    const step     = tileSize + tileGap;
+    const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
+    const gridY    = GRID_Y * sf;
+    const gridSpan = GRID_TOTAL * sf;
+    const g = this.add.graphics();
+    g.setDepth(2);
+    g.fillStyle(0x00d4aa, 0.09);
+    // Cross-hair: touched row + col — instant orientation cue
+    g.fillRoundedRect(gridX, gridY + row * step - 2, gridSpan, tileSize + 4, 5 * sf);
+    g.fillRoundedRect(gridX + col * step - 2, gridY, tileSize + 4, gridSpan, 5 * sf);
+    this.swipeHighlight = g;
+  }
+
+  private clearSwipeHighlight() {
+    if (this.swipeHighlight) {
+      this.swipeHighlight.destroy();
+      this.swipeHighlight = null;
+    }
+  }
+
+  /** Snapshot the 4 tile sprites for the locked row/col before drag preview starts. */
+  private initDragPreview() {
+    if (this.animating) return;
+    this.dragTileSprites = [];
+    this.dragBaseX = [];
+    this.dragBaseY = [];
+    const indices: number[] = [];
+    if (this.dragAxis === 'row') {
+      for (let c = 0; c < GRID_SIZE; c++) indices.push(this.swipeRow * GRID_SIZE + c);
+    } else {
+      for (let r = 0; r < GRID_SIZE; r++) indices.push(r * GRID_SIZE + this.swipeCol);
+    }
+    for (const idx of indices) {
+      const sprite = this.tileMap.get(this.board[idx]);
+      if (sprite) {
+        this.dragTileSprites.push(sprite);
+        this.dragBaseX.push(sprite.container.x);
+        this.dragBaseY.push(sprite.container.y);
+      }
+    }
+  }
+
+  /** Offset 4 locked tiles by (dx, dy), clamped to one cell width. */
+  private updateDragPreview(dx: number, dy: number) {
+    const sf = this.scaleFactor;
+    const step = (TILE_SIZE + TILE_GAP) * sf;
+    const max = step * 0.9;
+    const cdx = Math.max(-max, Math.min(max, dx));
+    const cdy = Math.max(-max, Math.min(max, dy));
+    for (let i = 0; i < this.dragTileSprites.length; i++) {
+      this.dragTileSprites[i].container.x = this.dragBaseX[i] + cdx;
+      this.dragTileSprites[i].container.y = this.dragBaseY[i] + cdy;
+    }
+  }
+
+  /**
+   * snapBack=true  → spring tiles back to their base positions (tap / cancelled swipe)
+   * snapBack=false → leave positions; animateShift will reset via setPosition
+   */
+  private clearDragPreview(snapBack: boolean) {
+    if (snapBack && this.dragTileSprites.length > 0) {
+      for (let i = 0; i < this.dragTileSprites.length; i++) {
+        this.tweens.add({
+          targets: this.dragTileSprites[i].container,
+          x: this.dragBaseX[i],
+          y: this.dragBaseY[i],
+          duration: 80,
+          ease: 'Back.Out',
+        });
+      }
+    }
+    this.dragTileSprites = [];
+    this.dragBaseX = [];
+    this.dragBaseY = [];
   }
 
   // ─── Visual Arrow Beacon, Lane Beam & Toast Helpers ────────────────────────
@@ -1394,7 +1522,7 @@ export class GameScene extends Phaser.Scene {
       for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
         const val = this.board[i];
         if (val === i + 1 && oldBoard[i] !== i + 1) {
-          const sprite = this.tileSprites.find(s => s.value === val);
+          const sprite = this.tileMap.get(val); // Fix #3: O(1) lookup
           if (sprite) {
             this.tweens.add({
               targets: sprite.container,
@@ -1470,6 +1598,11 @@ export class GameScene extends Phaser.Scene {
       dy = direction === 'up' ? -step : step;
     }
 
+    // Fix #3: Precompute O(1) reverse-index map for newBoard
+    // (replaces newBoard.indexOf() — an O(n) scan — called 4× per shift)
+    const newBoardMap = new Map<number, number>();
+    for (let i = 0; i < newBoard.length; i++) newBoardMap.set(newBoard[i], i);
+
     // Determine which tile wraps around
     const wrapOldIdx = (direction === 'left' || direction === 'up')
       ? indices[0]
@@ -1487,40 +1620,57 @@ export class GameScene extends Phaser.Scene {
 
     for (const oldIdx of indices) {
       const tileValue = this.board[oldIdx];
-      const sprite = this.tileSprites.find(s => s.value === tileValue);
-      if (!sprite) {
-        finish();
-        continue;
-      }
-      const newIdx = newBoard.indexOf(tileValue);
+      const sprite = this.tileMap.get(tileValue); // Fix #3: O(1) lookup
+      if (!sprite) { finish(); continue; }
+
+      const newIdx = newBoardMap.get(tileValue) ?? oldIdx; // Fix #3: O(1) reverse lookup
       const startCoord = getPosCoords(oldIdx);
       const targetCoord = getPosCoords(newIdx);
 
-      // Ensure container starts at exact expected coordinates
+      // Always reset to exact start coord (clears any drag-preview offset)
       sprite.container.setPosition(startCoord.x, startCoord.y);
+      sprite.container.alpha = 1;
 
       if (oldIdx === wrapOldIdx) {
-        // Wrapping tile:
-        // Slide out in shift direction, jump to outside opposite edge, slide in to target position
+        // Fix #5: Single onUpdate tween with fade — eliminates the 1-frame ghost
+        // from the old two-tween chain where setPosition fired in onComplete
+        // between render frames.
+        const exitX = startCoord.x + dx * 0.5;
+        const exitY = startCoord.y + dy * 0.5;
+        const entryX = targetCoord.x - dx * 0.55;
+        const entryY = targetCoord.y - dy * 0.55;
+        const wrapObj = { t: 0 };
+
         this.tweens.add({
-          targets: sprite.container,
-          x: startCoord.x + dx * 0.5,
-          y: startCoord.y + dy * 0.5,
-          duration: SHIFT_ANIM_DURATION * 0.45,
-          ease: 'Sine.In',
+          targets: wrapObj,
+          t: 1,
+          duration: SHIFT_ANIM_DURATION,
+          ease: 'Linear',
+          onUpdate: () => {
+            const t = wrapObj.t;
+            if (t < 0.4) {
+              // Phase 1: slide toward exit edge, fade out
+              const p = Phaser.Math.Easing.Sine.In(t / 0.4);
+              sprite.container.x = startCoord.x + (exitX - startCoord.x) * p;
+              sprite.container.y = startCoord.y + (exitY - startCoord.y) * p;
+              sprite.container.alpha = 1 - p * 0.85;
+            } else if (t < 0.6) {
+              // Phase 2: hold at entry position, fade in (teleport hidden by alpha)
+              sprite.container.x = entryX;
+              sprite.container.y = entryY;
+              sprite.container.alpha = (t - 0.4) / 0.2;
+            } else {
+              // Phase 3: slide from entry to target, fully visible
+              const p = Phaser.Math.Easing.Sine.Out((t - 0.6) / 0.4);
+              sprite.container.x = entryX + (targetCoord.x - entryX) * p;
+              sprite.container.y = entryY + (targetCoord.y - entryY) * p;
+              sprite.container.alpha = 1;
+            }
+          },
           onComplete: () => {
-            sprite.container.setPosition(
-              targetCoord.x - dx * 0.55,
-              targetCoord.y - dy * 0.55,
-            );
-            this.tweens.add({
-              targets: sprite.container,
-              x: targetCoord.x,
-              y: targetCoord.y,
-              duration: SHIFT_ANIM_DURATION * 0.55,
-              ease: 'Sine.Out',
-              onComplete: finish,
-            });
+            sprite.container.setPosition(targetCoord.x, targetCoord.y);
+            sprite.container.alpha = 1;
+            finish();
           },
         });
       } else {
@@ -1544,16 +1694,16 @@ export class GameScene extends Phaser.Scene {
     const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
     const gridY    = GRID_Y * sf;
 
-    // Reorder tileSprites array to match board
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const value = this.board[i];
-      const sprite = this.tileSprites.find(s => s.value === value);
+      const sprite = this.tileMap.get(value); // Fix #3: O(1) lookup
       if (sprite) {
         const row = Math.floor(i / GRID_SIZE);
         const col = i % GRID_SIZE;
         const x = gridX + col * (tileSize + tileGap) + tileSize / 2;
         const y = gridY + row * (tileSize + tileGap) + tileSize / 2;
         sprite.container.setPosition(x, y);
+        sprite.container.alpha = 1; // Always reset alpha (wrap tile fades during anim)
       }
     }
   }
@@ -1561,7 +1711,7 @@ export class GameScene extends Phaser.Scene {
   private refreshTileColors() {
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const value = this.board[i];
-      const sprite = this.tileSprites.find(s => s.value === value);
+      const sprite = this.tileMap.get(value); // Fix #3: O(1) lookup
       if (sprite) {
         const inPlace = value === i + 1;
         if (inPlace) {

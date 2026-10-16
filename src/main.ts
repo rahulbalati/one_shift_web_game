@@ -17,14 +17,16 @@ const config: Phaser.Types.Core.GameConfig = {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  roundPixels: true,
+  // roundPixels MUST be false — true causes tiles to snap to integers mid-tween
+  // producing the "shattered / jittery" movement on mobile.
+  roundPixels: false,
   input: {
     activePointers: 3,
   },
   render: {
     antialias: true,
     pixelArt: false,
-    roundPixels: true,
+    roundPixels: false,
   },
 };
 
