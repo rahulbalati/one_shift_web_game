@@ -7,7 +7,7 @@ import {
   BASE_WIDTH,
 } from '../config.ts';
 import { cloneBoard, applyMove, isSolved } from '../game/Board.ts';
-import { scramble, getLevelTimeLimit, getParMoves, findHintMove, scrambleDaily } from '../game/Scrambler.ts';
+import { scramble, getParMoves, findHintMove, scrambleDaily, toroidalDistance } from '../game/Scrambler.ts';
 import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
 import { reverseMove } from '../types.ts';
 import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
@@ -64,10 +64,16 @@ export class GameScene extends Phaser.Scene {
   private howToBtn!: Phaser.GameObjects.Container;
   private pauseOverlay!: Phaser.GameObjects.Container;
   private howToOverlay!: Phaser.GameObjects.Container;
-  private timeUpOverlay!: Phaser.GameObjects.Container;
   private timerEvent!: Phaser.Time.TimerEvent;
-  private timeLimit = 45;
-  private lastTickSecond = -1;
+  private timeLimit = 0; // Stopwatch mode
+
+  // Smart Hint Nudge & Inactivity Tracking (Respectful & Non-Intrusive)
+  private lastActionTime = 0;
+  private nudgeCooldownUntil = 0;
+  private nudgeCount = 0;
+  private nudgeTween: Phaser.Tweens.Tween | null = null;
+  private minDistanceThisLevel = Infinity;
+  private movesWithoutProgress = 0;
 
   // Visual Beacon, Lane Beam & Toast
   private arrowBeacon: Phaser.GameObjects.Graphics | null = null;
@@ -131,8 +137,7 @@ export class GameScene extends Phaser.Scene {
     this.moveHistory = data.moveHistory ? [...data.moveHistory] : [];
     this.startTime = data.startTime ?? 0;
     this.totalPauseMs = data.totalPauseMs ?? 0;
-    this.timeLimit = data.timeLimit ?? getLevelTimeLimit(this.level);
-    this.lastTickSecond = -1;
+    this.timeLimit = 0; // Stopwatch mode (no game-over countdown)
     this.paused = false;
     this.animating = false;
     this.keyboardMode = false;
@@ -141,6 +146,13 @@ export class GameScene extends Phaser.Scene {
     this.board = data.board ? cloneBoard(data.board) : (undefined as unknown as Board);
     this.scrambledBoard = data.scrambledBoard ? cloneBoard(data.scrambledBoard) : (undefined as unknown as Board);
     this.boardHistory = data.board ? [cloneBoard(data.board)] : [];
+
+    // Reset smart hint tracking
+    this.lastActionTime = Date.now();
+    this.nudgeCooldownUntil = 0;
+    this.nudgeCount = 0;
+    this.movesWithoutProgress = 0;
+    this.minDistanceThisLevel = Infinity;
   }
 
   create() {
@@ -153,7 +165,6 @@ export class GameScene extends Phaser.Scene {
     this.createControlButtons();
     this.createPauseOverlay();
     this.createHowToOverlay();
-    this.createTimeUpOverlay();
     this.createSelectionIndicator();
     this.setupKeyboard();
     this.setupSwipeControls();
@@ -164,6 +175,8 @@ export class GameScene extends Phaser.Scene {
       this.dismissTutorialImmediate();
     }
     this.startTimer();
+    this.minDistanceThisLevel = toroidalDistance(this.board);
+    this.lastActionTime = Date.now();
     crazyGames.gameplayStart();
 
     // Handle responsive resize without losing board state
@@ -171,6 +184,7 @@ export class GameScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       this.scale.off('resize', this.onResize, this);
       this.timerEvent?.remove();
+      this.dismissHintNudge();
     });
   }
 
@@ -657,65 +671,6 @@ export class GameScene extends Phaser.Scene {
     this.howToOverlay.setDepth(10);
   }
 
-  private createTimeUpOverlay() {
-    const { width, height } = this.scale;
-    const sf = this.scaleFactor;
-    const cx = width / 2;
-    const cy = height / 2;
-
-    const darken = this.add.rectangle(0, 0, width, height, 0x000000, 0.85).setOrigin(0);
-    const panW = Math.min(320 * sf, width - 40 * sf);
-    const panH = 260 * sf;
-    const panel = this.add.rectangle(cx, cy, panW, panH, COLORS.panelBg)
-      .setStrokeStyle(2.5 * sf, 0xff4455);
-
-    const icon = this.createText(cx, cy - 65 * sf, '⏳', {
-      fontSize: `${Math.round(42 * sf)}px`,
-    }).setOrigin(0.5);
-
-    const title = this.createText(cx, cy - 12 * sf, "TIME'S UP!", {
-      fontSize: `${Math.round(24 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#ff4455',
-    }).setOrigin(0.5);
-
-    const sub = this.createText(cx, cy + 24 * sf, 'The clock ran out before solving!', {
-      fontSize: `${Math.round(13 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
-
-    const btnW = 160 * sf;
-    const btnH = 46 * sf;
-    const btnY = cy + 78 * sf;
-
-    const retryBg = this.add.rectangle(0, 0, btnW, btnH, 0xff4455).setOrigin(0.5);
-    const retryTxt = this.createText(0, 0, '🔄 Try Again', {
-      fontSize: `${Math.round(16 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#ffffff',
-    }).setOrigin(0.5);
-
-    const retryBtn = this.add.container(cx, btnY, [retryBg, retryTxt]);
-    retryBtn.setSize(btnW, btnH);
-    retryBtn.setInteractive({ useHandCursor: true });
-
-    const handleRetry = () => {
-      sounds.playClick();
-      this.timeUpOverlay.setVisible(false);
-      this.paused = false;
-      this.doRestart();
-      this.startTimer();
-      crazyGames.gameplayStart();
-    };
-
-    retryBtn.on('pointerdown', handleRetry);
-    retryBtn.on('pointerup', handleRetry);
-
-    this.timeUpOverlay = this.add.container(0, 0, [darken, panel, icon, title, sub, retryBtn]);
-    this.timeUpOverlay.setVisible(false);
-    this.timeUpOverlay.setDepth(25);
-  }
-
   // ─── Keyboard selection indicator ───────────────────────────────────────────
   private createSelectionIndicator() {
     this.selectionIndicator = this.add.graphics();
@@ -775,6 +730,8 @@ export class GameScene extends Phaser.Scene {
   // ─── Swipe controls ─────────────────────────────────────────────────────────
   private setupSwipeControls() {
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.lastActionTime = Date.now();
+      this.dismissHintNudge();
       if (this.paused) return;
       if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
       if (this.activePointerId !== null) return; // Ignore multi-touch secondary fingers
@@ -1007,6 +964,9 @@ export class GameScene extends Phaser.Scene {
   private doHint() {
     if (this.animating || this.paused) return;
     sounds.playClick();
+    this.lastActionTime = Date.now();
+    this.dismissHintNudge();
+    this.nudgeCooldownUntil = Date.now() + 45000; // Extra long cooldown after voluntary hint use
     const hintMove = findHintMove(this.board, this.moveHistory.slice(-6), this.boardHistory.slice(-8));
     if (!hintMove) {
       this.showToast('🎉 Already Solved!');
@@ -1017,6 +977,62 @@ export class GameScene extends Phaser.Scene {
     const dir = hintMove.direction.toUpperCase();
     this.showToast(`💡 Hint: Shift ${targetName} ${dir}!`);
     triggerHaptic(20);
+  }
+
+  // ─── Smart Hint Nudge (Respectful & Non-Intrusive) ─────────────────────────
+  private checkSmartHintNudge() {
+    if (this.paused || this.animating || isSolved(this.board)) return;
+    if (this.level <= 2 && !this.isDailyMode) return; // Tutorial levels already have guidance pointers
+    if (this.nudgeCount >= 2) return; // Respect player agency: max 2 nudges per level
+    const now = Date.now();
+    if (now < this.nudgeCooldownUntil) return; // In 30s cooldown
+
+    const idleSeconds = (now - this.lastActionTime) / 1000;
+    const isIdle = idleSeconds >= 15;
+    const isStuck = this.movesWithoutProgress >= 5;
+
+    if (isIdle || isStuck) {
+      this.triggerHintNudge();
+    }
+  }
+
+  private triggerHintNudge() {
+    if (this.nudgeTween) return;
+    this.nudgeCount++;
+    this.nudgeCooldownUntil = Date.now() + 30000; // 30-second cooldown
+    this.movesWithoutProgress = 0;
+
+    const bg = this.hintBtn?.list[0] as Phaser.GameObjects.Rectangle;
+    if (!bg) return;
+
+    const sf = this.scaleFactor;
+    // Static soft shimmer: temporarily highlight border with gold accent for 2 gentle breaths (2.6s total), then settle
+    bg.setStrokeStyle(2.5 * sf, 0xf5a623);
+
+    this.nudgeTween = this.tweens.add({
+      targets: bg,
+      strokeAlpha: { from: 0.3, to: 1 },
+      duration: 650,
+      yoyo: true,
+      repeat: 1, // Exactly 2 breaths total!
+      ease: 'Sine.InOut',
+      onComplete: () => {
+        this.dismissHintNudge();
+      },
+    });
+  }
+
+  private dismissHintNudge() {
+    if (this.nudgeTween) {
+      this.nudgeTween.stop();
+      this.nudgeTween = null;
+    }
+    const bg = this.hintBtn?.list[0] as Phaser.GameObjects.Rectangle;
+    if (bg) {
+      const sf = this.scaleFactor;
+      bg.setStrokeStyle(1.5 * sf, COLORS.accent);
+      bg.strokeAlpha = 1;
+    }
   }
 
   // ─── Onboarding Tutorial (Levels 1 & 2 Only) ────────────────────────────────
@@ -1293,9 +1309,8 @@ export class GameScene extends Phaser.Scene {
     this.tutorialSwipeHand = null;
   }
 
-  // ─── Countdown Timer ────────────────────────────────────────────────────────
+  // ─── Stopwatch Timer ────────────────────────────────────────────────────────
   private startTimer() {
-    this.timeLimit = this.isDailyMode ? 90 : getLevelTimeLimit(this.level);
     if (!this.startTime) {
       this.startTime = Date.now();
     }
@@ -1310,48 +1325,13 @@ export class GameScene extends Phaser.Scene {
 
   private updateTimer() {
     if (this.paused) return;
-    if (this.timeLimit === 0) {
-      this.timerText.setText('ZEN');
-      this.timerText.setStyle({ color: '#' + COLORS.accent.toString(16).padStart(6, '0') });
-      return;
-    }
     const elapsed = Math.floor((Date.now() - this.startTime - this.totalPauseMs) / 1000);
-    const remaining = Math.max(0, this.timeLimit - elapsed);
-    const m = Math.floor(remaining / 60);
-    const s = remaining % 60;
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
     this.timerText.setText(`${m}:${String(s).padStart(2, '0')}`);
+    this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
 
-    if (remaining <= 10 && remaining > 0) {
-      this.timerText.setStyle({ color: '#ff4455' });
-      if (this.lastTickSecond !== remaining) {
-        this.lastTickSecond = remaining;
-        sounds.playTimeWarning();
-        triggerHaptic(25);
-        this.tweens.add({
-          targets: this.timerText,
-          scaleX: 1.15,
-          scaleY: 1.15,
-          duration: 90,
-          yoyo: true,
-          ease: 'Sine.InOut',
-        });
-      }
-    } else if (remaining > 10) {
-      this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
-    }
-
-    if (remaining <= 0) {
-      this.timerEvent?.remove();
-      this.onTimeUp();
-    }
-  }
-
-  private onTimeUp() {
-    this.paused = true;
-    sounds.playTimeUp();
-    triggerHaptic(40);
-    crazyGames.gameplayStop();
-    this.timeUpOverlay.setVisible(true);
+    this.checkSmartHintNudge();
   }
 
   private getElapsedSeconds(): number {
@@ -1362,6 +1342,9 @@ export class GameScene extends Phaser.Scene {
   doShift(type: 'row' | 'col', index: number, direction: ShiftDirection) {
     if (this.paused) return;
     if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
+
+    this.lastActionTime = Date.now();
+    this.dismissHintNudge();
 
     if (this.animating) {
       // Buffer at most 1 subsequent move so rapid consecutive swipes feel seamless
@@ -1391,6 +1374,15 @@ export class GameScene extends Phaser.Scene {
       this.refreshTileColors();
       this.animating = false;
       triggerHaptic(15);
+
+      // Track distance to solved for smart hint stuck detection
+      const currentDist = toroidalDistance(newBoard);
+      if (currentDist < this.minDistanceThisLevel) {
+        this.minDistanceThisLevel = currentDist;
+        this.movesWithoutProgress = 0;
+      } else {
+        this.movesWithoutProgress++;
+      }
 
       // Pulse and chime ONLY for tile(s) that NEWLY locked into solved position
       let newlySolved = false;
@@ -1603,6 +1595,8 @@ export class GameScene extends Phaser.Scene {
   // ─── Controls ───────────────────────────────────────────────────────────────
   private doUndo() {
     if (this.animating || this.moveHistory.length === 0) return;
+    this.lastActionTime = Date.now();
+    this.dismissHintNudge();
     const lastMove = this.moveHistory.pop()!;
     const undoMove = reverseMove(lastMove);
     const newBoard = applyMove(this.board, undoMove);
@@ -1628,13 +1622,18 @@ export class GameScene extends Phaser.Scene {
 
   private doRestart() {
     if (this.animating) return;
+    this.lastActionTime = Date.now();
+    this.dismissHintNudge();
+    this.nudgeCount = 0;
+    this.nudgeCooldownUntil = 0;
+    this.movesWithoutProgress = 0;
     this.board = cloneBoard(this.scrambledBoard);
     this.boardHistory = [cloneBoard(this.scrambledBoard)];
+    this.minDistanceThisLevel = toroidalDistance(this.board);
     this.moveCount = 0;
     this.moveHistory = [];
     this.startTime = Date.now();
     this.totalPauseMs = 0;
-    this.lastTickSecond = -1;
     this.movesText.setText('0');
     this.updateParStars();
     this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
@@ -1650,6 +1649,7 @@ export class GameScene extends Phaser.Scene {
 
   private goToLevel(lvl: number) {
     if (this.animating) return;
+    this.dismissHintNudge();
     try {
       crazyGames.setItem('oneshift_current_level', String(lvl));
     } catch (_) {}
@@ -1658,6 +1658,7 @@ export class GameScene extends Phaser.Scene {
 
   private doNewGame() {
     if (this.animating) return;
+    this.dismissHintNudge();
     this.scene.restart({ level: this.level });
   }
 
@@ -1667,6 +1668,7 @@ export class GameScene extends Phaser.Scene {
     crazyGames.happytime();
     crazyGames.gameplayStop();
     this.timerEvent?.remove();
+    this.dismissHintNudge();
     const elapsed = this.getElapsedSeconds();
 
     let streak = 1;
