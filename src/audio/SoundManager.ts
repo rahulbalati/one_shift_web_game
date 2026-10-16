@@ -33,9 +33,32 @@ class SoundManager {
   private activeBgmNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
   private currentFilter: BiquadFilterNode | null = null;
 
+  private compressor: DynamicsCompressorNode | null = null;
+
   constructor() {
     this.muted = localStorage.getItem('oneshift_muted') === 'true';
     this.setupLifecycleListeners();
+    this.setupAudioUnlock();
+  }
+
+  private setupAudioUnlock() {
+    if (typeof window === 'undefined') return;
+    const unlock = () => {
+      this.initCtx();
+      if (this.ctx && this.ctx.state === 'running') {
+        try {
+          const buffer = this.ctx.createBuffer(1, 1, 22050);
+          const src = this.ctx.createBufferSource();
+          src.buffer = buffer;
+          src.connect(this.ctx.destination);
+          src.start(0);
+        } catch (_) {}
+      }
+      window.removeEventListener('pointerdown', unlock, true);
+      window.removeEventListener('touchend', unlock, true);
+    };
+    window.addEventListener('pointerdown', unlock, true);
+    window.addEventListener('touchend', unlock, true);
   }
 
   private setupLifecycleListeners() {
@@ -118,7 +141,17 @@ class SoundManager {
         this.ctx = new AudioCtx();
         this.masterGain = this.ctx.createGain();
         this.masterGain.gain.setValueAtTime(this.isMuted() ? 0 : 1, this.ctx.currentTime);
-        this.masterGain.connect(this.ctx.destination);
+
+        // Dynamics Compressor: keeps audio within 0dB, preventing clipping/distortion during fast tapping
+        this.compressor = this.ctx.createDynamicsCompressor();
+        this.compressor.threshold.setValueAtTime(-12, this.ctx.currentTime);
+        this.compressor.knee.setValueAtTime(30, this.ctx.currentTime);
+        this.compressor.ratio.setValueAtTime(12, this.ctx.currentTime);
+        this.compressor.attack.setValueAtTime(0.003, this.ctx.currentTime);
+        this.compressor.release.setValueAtTime(0.15, this.ctx.currentTime);
+
+        this.masterGain.connect(this.compressor);
+        this.compressor.connect(this.ctx.destination);
       }
     }
     if (this.ctx && this.ctx.state === 'suspended') {
@@ -277,22 +310,25 @@ class SoundManager {
     this.initCtx();
     if (!this.ctx) return;
 
+    const now = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(600, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(300, this.ctx.currentTime + 0.04);
+    osc.frequency.setValueAtTime(560, now);
+    osc.frequency.exponentialRampToValueAtTime(260, now + 0.055);
 
-    gain.gain.setValueAtTime(0.18, this.ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.04);
+    // Micro-attack (2ms) prevents DAC pop/crack on zero-crossing
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.16, now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
 
     const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
     gain.connect(out);
 
-    osc.start();
-    osc.stop(this.ctx.currentTime + 0.04);
+    osc.start(now);
+    osc.stop(now + 0.06);
   }
 
   // ─── SFX: Tile Shift Whoosh ─────────────────────────────────────────────────
@@ -306,19 +342,19 @@ class SoundManager {
     const gain = this.ctx.createGain();
 
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(280, now);
-    osc.frequency.exponentialRampToValueAtTime(140, now + 0.12);
+    osc.frequency.setValueAtTime(260, now);
+    osc.frequency.exponentialRampToValueAtTime(130, now + 0.11);
 
-    gain.gain.setValueAtTime(0.12, now);
-    gain.gain.linearRampToValueAtTime(0.2, now + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.14, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
 
     const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
     gain.connect(out);
 
-    osc.start();
-    osc.stop(now + 0.12);
+    osc.start(now);
+    osc.stop(now + 0.115);
   }
 
   // ─── SFX: Tile Solved Chime ─────────────────────────────────────────────────
@@ -335,15 +371,16 @@ class SoundManager {
     osc.frequency.setValueAtTime(880, now); // A5 note
     osc.frequency.exponentialRampToValueAtTime(1320, now + 0.08); // E6 note
 
-    gain.gain.setValueAtTime(0.14, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.14, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
 
     const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
     gain.connect(out);
 
-    osc.start();
-    osc.stop(now + 0.18);
+    osc.start(now);
+    osc.stop(now + 0.165);
   }
 
   // ─── SFX: Victory Fanfare Chord ─────────────────────────────────────────────
@@ -365,9 +402,9 @@ class SoundManager {
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, now + delay);
 
-      gain.gain.setValueAtTime(0.001, now + delay);
-      gain.gain.linearRampToValueAtTime(0.2, now + delay + 0.04);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.55);
+      gain.gain.setValueAtTime(0.0001, now + delay);
+      gain.gain.linearRampToValueAtTime(0.18, now + delay + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.55);
 
       osc.connect(gain);
       gain.connect(out);
@@ -391,15 +428,16 @@ class SoundManager {
     osc.frequency.setValueAtTime(880, now);
     osc.frequency.exponentialRampToValueAtTime(440, now + 0.05);
 
-    gain.gain.setValueAtTime(0.08, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.08, now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
 
     const out = this.masterGain || this.ctx.destination;
     osc.connect(gain);
     gain.connect(out);
 
-    osc.start();
-    osc.stop(now + 0.05);
+    osc.start(now);
+    osc.stop(now + 0.055);
   }
 
   // ─── SFX: Time's Up Buzzer ──────────────────────────────────────────────────
@@ -420,8 +458,9 @@ class SoundManager {
       osc.type = 'triangle';
       osc.frequency.setValueAtTime(freq, now + delay);
 
-      gain.gain.setValueAtTime(0.14, now + delay);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.35);
+      gain.gain.setValueAtTime(0.0001, now + delay);
+      gain.gain.linearRampToValueAtTime(0.14, now + delay + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.35);
 
       osc.connect(gain);
       gain.connect(out);
