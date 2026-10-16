@@ -5,11 +5,15 @@ import { VictoryScene } from './scenes/VictoryScene.ts';
 import { COLORS, BASE_WIDTH, BASE_HEIGHT } from './config.ts';
 import { crazyGames } from './sdk/CrazyGamesSDK.ts';
 
-// ─── Phaser Game config (Virtual Resolution with Scale.FIT) ───────────────────
+// ─── Phaser Game config (Native High-DPI Resolution with Scale.FIT) ─────────────
+const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2.5) : 1;
+const GAME_WIDTH = Math.round(BASE_WIDTH * dpr);
+const GAME_HEIGHT = Math.round(BASE_HEIGHT * dpr);
+
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  width: BASE_WIDTH,
-  height: BASE_HEIGHT,
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
   backgroundColor: '#' + COLORS.bgDeep.toString(16).padStart(6, '0'),
   parent: 'game-container',
   scene: [BootScene, GameScene, VictoryScene],
@@ -47,6 +51,13 @@ async function bootstrap() {
   if (typeof document !== 'undefined') {
     document.addEventListener('contextmenu', e => e.preventDefault());
     document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  }
+
+  // Ensure Google Fonts are loaded and parsed before any scene renders
+  if (typeof document !== 'undefined' && 'fonts' in document) {
+    try {
+      await document.fonts.ready;
+    } catch (_) {}
   }
 
   // CrazyGames SDK v3: Initialize first with safety timeout

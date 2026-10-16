@@ -49,23 +49,23 @@ export class VictoryScene extends Phaser.Scene {
       } catch (_) {}
     }
 
-    const width = 460;
-    const height = 760;
-    const sf = 1;
-    this.scaleFactor = 1;
+    const width = this.scale.width;
+    const height = this.scale.height;
+    const sf = this.scale.width / 460;
+    this.scaleFactor = sf;
 
     // Dim overlay
     const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0).setOrigin(0);
     this.tweens.add({ targets: overlay, fillAlpha: 0.78, duration: 400 });
 
     // Panel
-    const panW = 340;
-    const panH = 390;
+    const panW = 340 * sf;
+    const panH = 390 * sf;
     const panX = width / 2;
     const panY = height / 2;
 
     const panel = this.add.rectangle(panX, panY, panW, panH, COLORS.panelBg)
-      .setStrokeStyle(2.5, COLORS.accent)
+      .setStrokeStyle(2.5 * sf, COLORS.accent)
       .setScale(0.6)
       .setAlpha(0);
 
@@ -117,7 +117,7 @@ export class VictoryScene extends Phaser.Scene {
       });
     }
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = 1;
     const font = "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
 
     const addText = (text: string, dy: number, size: number, color: number, delay = 300, style = '') => {

@@ -12,9 +12,9 @@ export class BootScene extends Phaser.Scene {
     // Notify CrazyGames SDK that initial loading has completed
     crazyGames.loadingStop();
 
-    const width = 460;
-    const height = 760;
-    const sf = 1;
+    const width = this.scale.width;
+    const height = this.scale.height;
+    const sf = this.scale.width / 460;
 
     // Deep gradient background
     const bg = this.add.graphics();
@@ -23,19 +23,19 @@ export class BootScene extends Phaser.Scene {
 
     const cx = width / 2;
     const cy = height / 2;
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const dpr = 1;
     const font = "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
 
     // ─── Ambient Floating Tiles (Commercial Polish) ──────────────────────────
     const floatTileValues = [1, 4, 7, 10, 13, 16, 2, 9];
     for (let i = 0; i < floatTileValues.length; i++) {
-      const tx = Phaser.Math.Between(40, width - 40);
-      const ty = Phaser.Math.Between(40, height - 40);
+      const tx = Phaser.Math.Between(40 * sf, width - 40 * sf);
+      const ty = Phaser.Math.Between(40 * sf, height - 40 * sf);
       const tSize = Phaser.Math.Between(28, 44) * sf;
       const tVal = floatTileValues[i];
 
       const tBg = this.add.rectangle(0, 0, tSize, tSize, COLORS.tile, 0.22)
-        .setStrokeStyle(1.2, COLORS.panelBorder, 0.35);
+        .setStrokeStyle(1.2 * sf, COLORS.panelBorder, 0.35);
       const tTxt = this.add.text(0, 0, String(tVal), {
         fontSize: `${Math.round(tSize * 0.46)}px`,
         fontFamily: font,
@@ -66,7 +66,7 @@ export class BootScene extends Phaser.Scene {
 
     // Glowing border behind mini-grid
     this.add.rectangle(cx, gridYOffset + gridSize / 2 - tileSize / 2, gridSize + 12 * sf, gridSize + 12 * sf, COLORS.panelBg, 0.85)
-      .setStrokeStyle(1.5, COLORS.accent, 0.4);
+      .setStrokeStyle(1.5 * sf, COLORS.accent, 0.4);
 
     for (let r = 0; r < 4; r++) {
       for (let c = 0; c < 4; c++) {
@@ -96,7 +96,7 @@ export class BootScene extends Phaser.Scene {
     // ─── Stylized Title Badge ────────────────────────────────────────────────
     const titlePillW = Math.min(320 * sf, width - 40);
     const titleBg = this.add.rectangle(cx, cy - 10 * sf, titlePillW, 56 * sf, COLORS.panelBg, 0.9)
-      .setStrokeStyle(2, COLORS.accent, 0.9);
+      .setStrokeStyle(2 * sf, COLORS.accent, 0.9);
 
     const titleTxt = this.add.text(cx, cy - 10 * sf, 'ONE SHIFT', {
       fontSize: `${Math.round(36 * sf)}px`,
@@ -128,7 +128,7 @@ export class BootScene extends Phaser.Scene {
     // ─── Objective Explanation Card ──────────────────────────────────────────
     const cardW = Math.min(310 * sf, width - 36);
     this.add.rectangle(cx, cy + 74 * sf, cardW, 46 * sf, 0x09102b, 0.8)
-      .setStrokeStyle(1, COLORS.panelBorder);
+      .setStrokeStyle(1 * sf, COLORS.panelBorder);
 
     this.add.text(cx, cy + 74 * sf, 'Goal: Arrange tiles 1 to 16 in order\nSlide entire rows & columns to solve', {
       fontSize: `${Math.round(12 * sf)}px`,
@@ -203,7 +203,7 @@ export class BootScene extends Phaser.Scene {
     const dailyBtnY = cy + 192 * sf;
 
     const dailyBtnBg = this.add.rectangle(0, 0, dailyBtnW, dailyBtnH, COLORS.panelBg)
-      .setStrokeStyle(1.5, COLORS.warning);
+      .setStrokeStyle(1.5 * sf, COLORS.warning);
     const dailyLabel = streak > 0 ? `📅 DAILY PUZZLE (🔥 ${streak})` : '📅 DAILY PUZZLE';
     const dailyBtnTxt = this.add.text(0, 0, dailyLabel, {
       fontSize: `${Math.round(14 * sf)}px`,

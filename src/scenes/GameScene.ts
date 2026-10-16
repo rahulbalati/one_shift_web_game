@@ -4,6 +4,7 @@ import {
   ARROW_SIZE, ARROW_MARGIN,
   COLORS, SCENE,
   SHIFT_ANIM_DURATION,
+  BASE_WIDTH,
 } from '../config.ts';
 import { cloneBoard, applyMove, isSolved } from '../game/Board.ts';
 import { scramble, getLevelTimeLimit, getParMoves, findHintMove, scrambleDaily } from '../game/Scrambler.ts';
@@ -174,7 +175,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private computeScale() {
-    this.scaleFactor = 1;
+    this.scaleFactor = this.scale.width / BASE_WIDTH;
   }
 
   private generatePuzzle() {
@@ -213,10 +214,9 @@ export class GameScene extends Phaser.Scene {
     text: string | string[],
     style: Phaser.Types.GameObjects.Text.TextStyle = {},
   ): Phaser.GameObjects.Text {
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     return this.add.text(x, y, text, {
       fontFamily: "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
-      resolution: dpr,
+      resolution: 1,
       ...style,
     });
   }
@@ -224,27 +224,29 @@ export class GameScene extends Phaser.Scene {
   // ─── Grid rendering ─────────────────────────────────────────────────────────
   private createGrid() {
     const sf = this.scaleFactor;
-    const tileSize = TILE_SIZE * sf;
-    const tileGap  = TILE_GAP  * sf;
-    const gridX    = (this.scale.width  - (GRID_TOTAL * sf)) / 2;
-    const gridY    = GRID_Y * sf;
+    const tileSize = Math.round(TILE_SIZE * sf);
+    const tileGap  = Math.round(TILE_GAP  * sf);
+    const step     = tileSize + tileGap;
+    const gridTotal = GRID_SIZE * step - tileGap;
+    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
+    const gridY    = Math.round(GRID_Y * sf);
 
     // Grid background card
-    const pad = 12 * sf;
+    const pad = Math.round(12 * sf);
     const card = this.add.graphics();
     card.fillStyle(COLORS.bgCard, 1);
     card.fillRoundedRect(gridX - pad, gridY - pad,
-      GRID_TOTAL * sf + pad * 2, GRID_TOTAL * sf + pad * 2, 14 * sf);
-    card.lineStyle(1.5, COLORS.panelBorder, 0.8);
+      gridTotal + pad * 2, gridTotal + pad * 2, Math.round(14 * sf));
+    card.lineStyle(1.5 * sf, COLORS.panelBorder, 0.8);
     card.strokeRoundedRect(gridX - pad, gridY - pad,
-      GRID_TOTAL * sf + pad * 2, GRID_TOTAL * sf + pad * 2, 14 * sf);
+      gridTotal + pad * 2, gridTotal + pad * 2, Math.round(14 * sf));
 
     // Interactive hand cursor zone across the board
     this.add.zone(
-      gridX + (GRID_TOTAL * sf) / 2,
-      gridY + (GRID_TOTAL * sf) / 2,
-      GRID_TOTAL * sf,
-      GRID_TOTAL * sf,
+      gridX + gridTotal / 2,
+      gridY + gridTotal / 2,
+      gridTotal,
+      gridTotal,
     ).setInteractive({ useHandCursor: true });
 
     this.tileSprites = [];
@@ -252,12 +254,12 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const row = Math.floor(i / GRID_SIZE);
       const col = i % GRID_SIZE;
-      const x = gridX + col * (tileSize + tileGap) + tileSize / 2;
-      const y = gridY + row * (tileSize + tileGap) + tileSize / 2;
+      const x = Math.round(gridX + col * step + tileSize / 2);
+      const y = Math.round(gridY + row * step + tileSize / 2);
       const value = this.board[i];
 
-      const bg = this.add.rectangle(0, 0, tileSize - 2, tileSize - 2, COLORS.tile)
-        .setStrokeStyle(1.5, COLORS.panelBorder);
+      const bg = this.add.rectangle(0, 0, tileSize - Math.round(2 * sf), tileSize - Math.round(2 * sf), COLORS.tile)
+        .setStrokeStyle(1.5 * sf, COLORS.panelBorder);
       (bg as Phaser.GameObjects.Rectangle).setOrigin(0.5);
 
       const label = this.createText(0, 0, String(value), {
@@ -325,7 +327,7 @@ export class GameScene extends Phaser.Scene {
     size: number,
   ): void {
     const bg = this.add.rectangle(0, 0, size, size, COLORS.arrowBg)
-      .setStrokeStyle(1.5, COLORS.arrowStroke)
+      .setStrokeStyle(1.5 * this.scaleFactor, COLORS.arrowStroke)
       .setOrigin(0.5) as Phaser.GameObjects.Rectangle;
     (bg as unknown as { setRoundedRectangle: (r: number) => void });
 
@@ -550,7 +552,7 @@ export class GameScene extends Phaser.Scene {
     const bgHover = accent ? COLORS.accent     : COLORS.arrowHover;
 
     const bg = this.add.rectangle(0, 0, w, h, bgColor)
-      .setStrokeStyle(1.5, accent ? COLORS.accent : COLORS.arrowStroke)
+      .setStrokeStyle(1.5 * sf, accent ? COLORS.accent : COLORS.arrowStroke)
       .setOrigin(0.5) as Phaser.GameObjects.Rectangle;
 
     const txt = this.createText(0, 0, label, {
@@ -588,7 +590,7 @@ export class GameScene extends Phaser.Scene {
 
     const darken = this.add.rectangle(0, 0, width, height, 0x000000, 0.75).setOrigin(0);
     const panel = this.add.rectangle(width / 2, height / 2, 300 * sf, 200 * sf, COLORS.panelBg)
-      .setStrokeStyle(2, COLORS.accent);
+      .setStrokeStyle(2 * sf, COLORS.accent);
 
     const title = this.createText(width / 2, height / 2 - 60 * sf, 'PAUSED', {
       fontSize: `${Math.round(30 * sf)}px`,
@@ -618,7 +620,7 @@ export class GameScene extends Phaser.Scene {
     const panW = Math.min(360 * sf, width - 30 * sf);
     const panH = 420 * sf;
     const panel = this.add.rectangle(width / 2, height / 2, panW, panH, COLORS.panelBg)
-      .setStrokeStyle(2, COLORS.accent);
+      .setStrokeStyle(2 * sf, COLORS.accent);
 
     const items: Phaser.GameObjects.GameObject[] = [darken, panel];
 
@@ -665,7 +667,7 @@ export class GameScene extends Phaser.Scene {
     const panW = Math.min(320 * sf, width - 40 * sf);
     const panH = 260 * sf;
     const panel = this.add.rectangle(cx, cy, panW, panH, COLORS.panelBg)
-      .setStrokeStyle(2.5, 0xff4455);
+      .setStrokeStyle(2.5 * sf, 0xff4455);
 
     const icon = this.createText(cx, cy - 65 * sf, '⏳', {
       fontSize: `${Math.round(42 * sf)}px`,
@@ -881,9 +883,10 @@ export class GameScene extends Phaser.Scene {
     if (!btn) return;
 
     // 1. Glowing pulsing beacon ring around the arrow button
+    const sf = this.scaleFactor;
     const g = this.add.graphics();
-    g.lineStyle(2.5, 0x00ffcc, 1);
-    g.strokeRoundedRect(-24, -24, 48, 48, 8);
+    g.lineStyle(2.5 * sf, 0x00ffcc, 1);
+    g.strokeRoundedRect(-24 * sf, -24 * sf, 48 * sf, 48 * sf, 8 * sf);
     btn.container.add(g);
     this.arrowBeacon = g;
 
@@ -899,7 +902,6 @@ export class GameScene extends Phaser.Scene {
     });
 
     // 2. Visual Guide Beam connecting the arrow across the whole row/column
-    const sf = this.scaleFactor;
     const tileSize = TILE_SIZE * sf;
     const tileGap  = TILE_GAP  * sf;
     const step     = tileSize + tileGap;
@@ -959,13 +961,14 @@ export class GameScene extends Phaser.Scene {
       this.toastContainer.destroy();
       this.toastContainer = null;
     }
+    const sf = this.scaleFactor;
     const cx = this.scale.width / 2;
-    const y = 208;
+    const y = 208 * sf;
 
-    const bg = this.add.rectangle(0, 0, 320, 32, COLORS.panelBg, 0.96)
-      .setStrokeStyle(1.5, COLORS.accent);
+    const bg = this.add.rectangle(0, 0, 320 * sf, 32 * sf, COLORS.panelBg, 0.96)
+      .setStrokeStyle(1.5 * sf, COLORS.accent);
     const txt = this.createText(0, 0, message, {
-      fontSize: '12px',
+      fontSize: `${Math.round(12 * sf)}px`,
       fontStyle: 'bold',
       color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
     }).setOrigin(0.5);
@@ -1398,11 +1401,11 @@ export class GameScene extends Phaser.Scene {
           if (sprite) {
             this.tweens.add({
               targets: sprite.container,
-              scaleX: 1.05,
-              scaleY: 1.05,
-              duration: 80,
+              scaleX: 1.08,
+              scaleY: 1.08,
+              duration: 90,
               yoyo: true,
-              ease: 'Sine.InOut',
+              ease: 'Back.Out',
             });
             newlySolved = true;
           }
@@ -1440,18 +1443,19 @@ export class GameScene extends Phaser.Scene {
     onComplete: () => void,
   ) {
     const sf = this.scaleFactor;
-    const tileSize = TILE_SIZE * sf;
-    const tileGap  = TILE_GAP  * sf;
-    const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY    = GRID_Y * sf;
+    const tileSize = Math.round(TILE_SIZE * sf);
+    const tileGap  = Math.round(TILE_GAP  * sf);
     const step     = tileSize + tileGap;
+    const gridTotal = GRID_SIZE * step - tileGap;
+    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
+    const gridY    = Math.round(GRID_Y * sf);
 
     const getPosCoords = (boardIdx: number) => {
       const col = boardIdx % GRID_SIZE;
       const row = Math.floor(boardIdx / GRID_SIZE);
       return {
-        x: gridX + col * step + tileSize / 2,
-        y: gridY + row * step + tileSize / 2,
+        x: Math.round(gridX + col * step + tileSize / 2),
+        y: Math.round(gridY + row * step + tileSize / 2),
       };
     };
 
@@ -1540,13 +1544,13 @@ export class GameScene extends Phaser.Scene {
           },
         });
       } else {
-        // Normal sliding tile
+        // Normal sliding tile with snappy physical deceleration
         this.tweens.add({
           targets: sprite.container,
           x: targetCoord.x,
           y: targetCoord.y,
           duration: SHIFT_ANIM_DURATION,
-          ease: 'Sine.Out',
+          ease: 'Cubic.Out',
           onComplete: finish,
         });
       }
@@ -1555,10 +1559,12 @@ export class GameScene extends Phaser.Scene {
 
   private snapTilesToBoard() {
     const sf = this.scaleFactor;
-    const tileSize = TILE_SIZE * sf;
-    const tileGap  = TILE_GAP  * sf;
-    const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY    = GRID_Y * sf;
+    const tileSize = Math.round(TILE_SIZE * sf);
+    const tileGap  = Math.round(TILE_GAP  * sf);
+    const step     = tileSize + tileGap;
+    const gridTotal = GRID_SIZE * step - tileGap;
+    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
+    const gridY    = Math.round(GRID_Y * sf);
 
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const value = this.board[i];
@@ -1566,8 +1572,8 @@ export class GameScene extends Phaser.Scene {
       if (sprite) {
         const row = Math.floor(i / GRID_SIZE);
         const col = i % GRID_SIZE;
-        const x = gridX + col * (tileSize + tileGap) + tileSize / 2;
-        const y = gridY + row * (tileSize + tileGap) + tileSize / 2;
+        const x = Math.round(gridX + col * step + tileSize / 2);
+        const y = Math.round(gridY + row * step + tileSize / 2);
         sprite.container.setPosition(x, y);
         sprite.container.alpha = 1; // Always reset alpha (wrap tile fades during anim)
       }
@@ -1575,6 +1581,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private refreshTileColors() {
+    const sf = this.scaleFactor;
     for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
       const value = this.board[i];
       const sprite = this.tileMap.get(value); // Fix #3: O(1) lookup
@@ -1582,11 +1589,11 @@ export class GameScene extends Phaser.Scene {
         const inPlace = value === i + 1;
         if (inPlace) {
           sprite.bg.setFillStyle(0x0e3f44);
-          sprite.bg.setStrokeStyle(2, 0x00ffcc);
+          sprite.bg.setStrokeStyle(2 * sf, 0x00ffcc);
           sprite.label.setColor('#00ffcc');
         } else {
           sprite.bg.setFillStyle(COLORS.tile);
-          sprite.bg.setStrokeStyle(1.5, COLORS.panelBorder);
+          sprite.bg.setStrokeStyle(1.5 * sf, COLORS.panelBorder);
           sprite.label.setColor('#' + COLORS.tileText.toString(16).padStart(6, '0'));
         }
       }
