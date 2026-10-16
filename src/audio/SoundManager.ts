@@ -36,7 +36,11 @@ class SoundManager {
   private compressor: DynamicsCompressorNode | null = null;
 
   constructor() {
-    this.muted = localStorage.getItem('oneshift_muted') === 'true';
+    try {
+      this.muted = typeof localStorage !== 'undefined' && localStorage.getItem('oneshift_muted') === 'true';
+    } catch (_) {
+      this.muted = false;
+    }
     this.setupLifecycleListeners();
     this.setupAudioUnlock();
   }
@@ -194,7 +198,11 @@ class SoundManager {
 
   toggleMute(): boolean {
     this.muted = !this.muted;
-    localStorage.setItem('oneshift_muted', String(this.muted));
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('oneshift_muted', String(this.muted));
+      }
+    } catch (_) {}
     if (this.isMuted()) {
       if (this.masterGain && this.ctx) {
         this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
