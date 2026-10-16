@@ -52,7 +52,7 @@ export const SCRAMBLE_INCREASE_PER_LEVEL = 3;
 export const MAX_SCRAMBLE_MOVES = 60;
 
 // ─── Animation timing ────────────────────────────────────────────────────────
-export const SHIFT_ANIM_DURATION = 120;   // ms for a row/column shift tween (super snappy)
+export const SHIFT_ANIM_DURATION = 110;   // ms for a row/column shift tween (buttery & responsive)
 export const VICTORY_ANIM_DURATION = 600;
 
 // ─── Scene keys ──────────────────────────────────────────────────────────────

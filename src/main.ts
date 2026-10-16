@@ -21,12 +21,21 @@ const config: Phaser.Types.Core.GameConfig = {
   // producing the "shattered / jittery" movement on mobile.
   roundPixels: false,
   input: {
-    activePointers: 3,
+    activePointers: 2,
+    touch: {
+      capture: true,
+    },
   },
   render: {
     antialias: true,
+    antialiasGL: true,
     pixelArt: false,
     roundPixels: false,
+    powerPreference: 'high-performance',
+  },
+  fps: {
+    target: 60,
+    smoothStep: true,
   },
 };
 
@@ -34,13 +43,10 @@ const config: Phaser.Types.Core.GameConfig = {
 let game: Phaser.Game | null = null;
 
 async function bootstrap() {
-  // Prevent context menu and touch bounce on mobile
+  // Prevent context menu and touch bounce/scrolling on mobile
   if (typeof document !== 'undefined') {
     document.addEventListener('contextmenu', e => e.preventDefault());
-    document.addEventListener('touchmove', e => {
-      const scale = (e as unknown as { scale?: number }).scale;
-      if (scale !== undefined && scale !== 1) e.preventDefault();
-    }, { passive: false });
+    document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
   }
 
   // CrazyGames SDK v3: Initialize first with safety timeout
