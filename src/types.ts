@@ -1,49 +1,55 @@
-import { GRID_SIZE } from './config.ts';
+// ─── Core puzzle types ────────────────────────────────────────────────────────
 
-// A 4×4 board is a flat array of 16 numbers (values 1–16)
-export type Board = number[];
-
-// Direction of a shift
 export type ShiftDirection = 'left' | 'right' | 'up' | 'down';
+export type LineType = 'row' | 'col';
 
-// A single move record used for undo
+// A single shift of one row or column (linked lines follow automatically)
 export interface MoveRecord {
-  type: 'row' | 'col';
-  index: number;          // 0-based row or column index
+  type: LineType;
+  index: number;
   direction: ShiftDirection;
 }
 
-// Data passed to the VictoryScene
-export interface VictoryData {
-  level: number;
-  moves: number;
-  elapsedSeconds: number;
-  bestMoves: number | null;
-  isDaily?: boolean;
-  streak?: number;
+export interface LineLink {
+  type: LineType;
+  a: number;
+  b: number;
 }
 
-// Per-level session data
-export interface LevelSession {
-  level: number;
-  scrambledBoard: Board;   // saved so Restart can go back to it
-  scrambleMoves: MoveRecord[];
+// Board rules introduced world by world. Every rule still only uses row/column shifts.
+export interface Rules {
+  lockedRows: number[];
+  lockedCols: number[];
+  oneWayRows: Record<number, 'left' | 'right'>;
+  oneWayCols: Record<number, 'up' | 'down'>;
+  links: LineLink[];
 }
 
-// Helper to convert row/col + direction to a MoveRecord
-export function makeMove(type: 'row' | 'col', index: number, direction: ShiftDirection): MoveRecord {
+export type PuzzleKind = 'numbers' | 'pattern';
+
+export interface Puzzle {
+  size: number;
+  kind: PuzzleKind;
+  // keys[tileId] = colour/number group that tile counts as
+  keys: number[];
+  // target[pos] = key that must end up at that position
+  target: number[];
+  // start[pos] = tileId placed there at the start
+  start: number[];
+  par: number;        // proven minimum number of moves
+  limit: number;      // move limit (0 = unlimited)
+  rules: Rules;
+  patternName?: string;
+}
+
+export function makeMove(type: LineType, index: number, direction: ShiftDirection): MoveRecord {
   return { type, index, direction };
 }
 
-// Reverse of a move (for undo)
-export function reverseMove(move: MoveRecord): MoveRecord {
-  const opp: Record<ShiftDirection, ShiftDirection> = {
-    left: 'right', right: 'left', up: 'down', down: 'up',
-  };
-  return { type: move.type, index: move.index, direction: opp[move.direction] };
-}
+export const OPPOSITE: Record<ShiftDirection, ShiftDirection> = {
+  left: 'right', right: 'left', up: 'down', down: 'up',
+};
 
-// Validated row/col range
-export function validIndex(i: number): boolean {
-  return i >= 0 && i < GRID_SIZE;
+export function reverseMove(move: MoveRecord): MoveRecord {
+  return { type: move.type, index: move.index, direction: OPPOSITE[move.direction] };
 }

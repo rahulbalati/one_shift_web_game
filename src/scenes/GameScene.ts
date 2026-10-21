@@ -1,1767 +1,1322 @@
 import Phaser from 'phaser';
 import {
-  GRID_SIZE, TILE_SIZE, TILE_GAP, GRID_TOTAL, GRID_Y,
-  ARROW_SIZE, ARROW_MARGIN,
-  COLORS, SCENE,
-  SHIFT_ANIM_DURATION,
-  BASE_WIDTH,
+  COLORS, ROW_COLORS, PATTERN_COLORS, SCENE, SHIFT_ANIM_MS, hex,
+  RUSH_START_MS, RUSH_BONUS_MS, RUSH_PERFECT_BONUS_MS, RUSH_MAX_MS,
 } from '../config.ts';
-import { cloneBoard, applyMove, isSolved } from '../game/Board.ts';
-import { scramble, getParMoves, findHintMove, scrambleDaily } from '../game/Scrambler.ts';
-import type { Board, MoveRecord, ShiftDirection, VictoryData } from '../types.ts';
+import type { MoveRecord, Puzzle, ShiftDirection } from '../types.ts';
 import { reverseMove } from '../types.ts';
+import {
+  applyMove, canMove, correctCount, isCorrectAt, isLocked, isSolved, keysOf,
+  lineIndices, linesFor, oneWayDir,
+} from '../game/Board.ts';
+import { solve } from '../game/Solver.ts';
+import { buildLevel, buildRush, worldOf } from '../game/Levels.ts';
+import { progress } from '../game/Progress.ts';
 import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { button, drawLock, onViewportResize, starString, text, viewport } from '../ui/ui.ts';
+import type { Button, Viewport } from '../ui/ui.ts';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface TileSprite {
-  container: Phaser.GameObjects.Container;
+type Mode = 'level' | 'rush';
+type Phase = 'play' | 'won' | 'failed' | 'rushover' | 'transition' | 'intro';
+
+interface TileView {
+  id: number;
+  c: Phaser.GameObjects.Container;
   bg: Phaser.GameObjects.Rectangle;
-  label: Phaser.GameObjects.Text;
-  value: number;
+  tw: Phaser.Tweens.Tween | null;
+  correct: boolean;
 }
 
-interface ArrowBtn {
-  container: Phaser.GameObjects.Container;
-  bg: Phaser.GameObjects.Rectangle;
-  icon: Phaser.GameObjects.Text;
-  type: 'row' | 'col';
+interface ArrowView {
+  move: MoveRecord;
+  c: Phaser.GameObjects.Container;
+}
+
+interface RushState {
+  score: number;
   index: number;
-  direction: ShiftDirection;
+  timeLeft: number;
+  seed: number;
 }
 
-// ─── Session best scores (in-memory) ─────────────────────────────────────────
-const bestMoves: Record<number, number> = {};
+interface Snapshot {
+  puzzle: Puzzle;
+  board: number[];
+  history: MoveRecord[];
+  moves: number;
+  bonus: number;
+  usedBonus: boolean;
+  phase: Phase;
+  stars: number;
+  paused: boolean;
+  rush?: RushState;
+}
 
-// ─── GameScene ────────────────────────────────────────────────────────────────
+export interface GameData {
+  mode?: Mode;
+  level?: number;
+  restore?: Snapshot;
+}
+
+interface DragState {
+  id: number;
+  x0: number;
+  y0: number;
+  t0: number;
+  row: number;
+  col: number;
+  axis: 'x' | 'y' | null;
+  fired: number;      // net shifts made by this drag (signed)
+  blocked: boolean;
+}
+
 export class GameScene extends Phaser.Scene {
-  // State
-  private board!: Board;
-  private scrambledBoard!: Board;
-  private moveHistory: MoveRecord[] = [];
-  private boardHistory: Board[] = [];
-  private moveCount = 0;
+  private mode: Mode = 'level';
   private level = 1;
-  private isDailyMode = false;
-  private startTime = 0;
+  private puzzle!: Puzzle;
+  private board: number[] = [];
+  private history: MoveRecord[] = [];
+  private moves = 0;
+  private bonus = 0;
+  private usedBonus = false;
+  private phase: Phase = 'play';
+  private stars = 0;
   private paused = false;
-  private pausedAt = 0;
-  private totalPauseMs = 0;
-  private animating = false;
+  private rush: RushState | null = null;
+  private restoring = false;
+  private leaving = false;
 
-  // Graphics objects
-  private tileSprites: TileSprite[] = [];
-  private arrowBtns: ArrowBtn[] = [];
-  private timerText!: Phaser.GameObjects.Text;
+  // Layout
+  private vp!: Viewport;
+  private ts = 0;          // tile size (px)
+  private gap = 0;
+  private step = 0;
+  private bx0 = 0;         // board top-left
+  private by0 = 0;
+  private span = 0;
+  private arrowSize = 0;
+  private arrowOff = 0;
+
+  // Views
+  private tiles: TileView[] = [];
+  private arrows: ArrowView[] = [];
+  private boardObjs: Phaser.GameObjects.GameObject[] = [];
+  private hintObjs: Phaser.GameObjects.GameObject[] = [];
+  private hintTweens: Phaser.Tweens.Tween[] = [];
+  private panel: Phaser.GameObjects.Container | null = null;
+  private panelPrimary: (() => void) | null = null;
+  private toastObj: Phaser.GameObjects.Container | null = null;
+  private selection!: Phaser.GameObjects.Graphics;
+  private keyboardUsed = false;
+  private selRow = 0;
+  private selCol = 0;
+
+  // HUD
   private movesText!: Phaser.GameObjects.Text;
-  private bestText!: Phaser.GameObjects.Text;
-  private parStarsText!: Phaser.GameObjects.Text;
-  private undoBtn!: Phaser.GameObjects.Container;
-  private restartBtn!: Phaser.GameObjects.Container;
-  private newGameBtn!: Phaser.GameObjects.Container;
-  private hintBtn!: Phaser.GameObjects.Container;
-  private pauseBtn!: Phaser.GameObjects.Container;
-  private howToBtn!: Phaser.GameObjects.Container;
-  private pauseOverlay!: Phaser.GameObjects.Container;
-  private howToOverlay!: Phaser.GameObjects.Container;
-  private timerEvent!: Phaser.Time.TimerEvent;
-  private timeLimit = 0; // Stopwatch mode
+  private starsText!: Phaser.GameObjects.Text;
+  private subText!: Phaser.GameObjects.Text;
+  private barFill!: Phaser.GameObjects.Rectangle;
+  private barW = 0;
+  private barFrac = { v: 0 };
+  private infoText: Phaser.GameObjects.Text | null = null;
+  private undoBtn!: Button;
 
-  // Visual Beacon, Lane Beam & Toast
-  private arrowBeacon: Phaser.GameObjects.Graphics | null = null;
-  private arrowBeaconTween: Phaser.Tweens.Tween | null = null;
-  private laneHighlight: Phaser.GameObjects.Graphics | null = null;
-  private laneHighlightTween: Phaser.Tweens.Tween | null = null;
-  private toastContainer: Phaser.GameObjects.Container | null = null;
-  private tutorialStep = 1;
-
-  // Keyboard
-  private selectedRow = 0;
-  private selectedCol = 0;
-  private keyboardMode = false;
-  private selectionIndicator!: Phaser.GameObjects.Graphics;
-
-  // Scale tracking
-  private scaleFactor = 1;
-
-  // Tutorial references
-  private tutorialContainer: Phaser.GameObjects.Container | null = null;
-  private tutorialTitleText: Phaser.GameObjects.Text | null = null;
-  private tutorialActionText: Phaser.GameObjects.Text | null = null;
-  private tutorialPointer: Phaser.GameObjects.Text | null = null;
-  private tutorialPointerTween: Phaser.Tweens.Tween | null = null;
-  private tutorialSwipeHand: Phaser.GameObjects.Text | null = null;
-  private tutorialSwipeTween: Phaser.Tweens.Tween | null = null;
-
-  // Swipe controls & Move queue
-  private swipeStartX = 0;
-  private swipeStartY = 0;
-  private swipeStartTime = 0;
-  private swipeRow = -1;
-  private swipeCol = -1;
-  private isSwiping = false;
-  private activePointerId: number | null = null;
-  private moveQueue: MoveRecord[] = [];
-
-  // O(1) sprite lookup (replaces tileSprites.find())
-  private tileMap: Map<number, TileSprite> = new Map();
+  private drag: DragState | null = null;
 
   constructor() {
     super({ key: SCENE.GAME });
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
-  init(data: {
-    level?: number;
-    isDaily?: boolean;
-    board?: Board;
-    scrambledBoard?: Board;
-    moveHistory?: MoveRecord[];
-    moveCount?: number;
-    startTime?: number;
-    totalPauseMs?: number;
-    timeLimit?: number;
-  } = {}) {
-    this.level = data.level ?? 1;
-    this.isDailyMode = data.isDaily ?? false;
-    this.tutorialStep = (this.level <= 2 && !this.isDailyMode) ? 1 : 0;
-    this.moveCount = data.moveCount ?? 0;
-    this.moveHistory = data.moveHistory ? [...data.moveHistory] : [];
-    this.startTime = data.startTime ?? 0;
-    this.totalPauseMs = data.totalPauseMs ?? 0;
-    this.timeLimit = 0; // Stopwatch mode (no game-over countdown)
-    this.paused = false;
-    this.animating = false;
-    this.moveQueue = [];
-    this.keyboardMode = false;
-    this.selectedRow = 0;
-    this.selectedCol = 0;
-    this.board = data.board ? cloneBoard(data.board) : (undefined as unknown as Board);
-    this.scrambledBoard = data.scrambledBoard ? cloneBoard(data.scrambledBoard) : (undefined as unknown as Board);
-    this.boardHistory = data.board ? [cloneBoard(data.board)] : [];
+  init(data: GameData = {}) {
+    this.mode = data.mode ?? 'level';
+    this.level = Math.max(1, data.level ?? progress.maxLevel());
+    this.tiles = [];
+    this.arrows = [];
+    this.boardObjs = [];
+    this.hintObjs = [];
+    this.hintTweens = [];
+    this.panel = null;
+    this.panelPrimary = null;
+    this.toastObj = null;
+    this.infoText = null;
+    this.drag = null;
+    this.leaving = false;
+    this.keyboardUsed = false;
+
+    const r = data.restore;
+    this.restoring = !!r;
+    if (r) {
+      this.puzzle = r.puzzle;
+      this.board = r.board.slice();
+      this.history = r.history.slice();
+      this.moves = r.moves;
+      this.bonus = r.bonus;
+      this.usedBonus = r.usedBonus;
+      this.phase = r.phase;
+      this.stars = r.stars;
+      this.paused = r.paused;
+      this.rush = r.rush ? { ...r.rush } : null;
+    } else {
+      this.rush = this.mode === 'rush'
+        ? { score: 0, index: 0, timeLeft: RUSH_START_MS, seed: Math.floor(Math.random() * 1e6) }
+        : null;
+      this.puzzle = this.rush ? buildRush(0, this.rush.seed) : buildLevel(this.level);
+      this.resetPuzzleState();
+      this.phase = 'play';
+      this.stars = 0;
+      this.paused = false;
+    }
+  }
+
+  private resetPuzzleState() {
+    this.board = this.puzzle.start.slice();
+    this.history = [];
+    this.moves = 0;
+    this.bonus = 0;
+    this.usedBonus = false;
   }
 
   create() {
-    this.computeScale();
+    this.vp = viewport(this);
     this.drawBackground();
-    this.generatePuzzle();
-    this.createGrid();
-    this.createArrows();
-    this.createHUD();
-    this.createControlButtons();
-    this.createPauseOverlay();
-    this.createHowToOverlay();
-    this.createSelectionIndicator();
+    this.buildBoardView(false);
+    this.createHud();
+    this.createButtons();
+    this.selection = this.add.graphics().setDepth(6);
+    this.setupInput();
     this.setupKeyboard();
-    this.setupSwipeControls();
-    this.setupVisibilityHandling();
-    if (this.level <= 2 && !this.isDailyMode) {
-      this.createTutorialHint();
-    } else {
-      this.dismissTutorialImmediate();
+    this.setupVisibility();
+    this.refreshStates(false, []);
+    this.updateHud();
+
+    onViewportResize(this, () => this.scene.restart({ mode: this.mode, level: this.level, restore: this.snapshot() }));
+
+    if (!this.restoring) this.cameras.main.fadeIn(160, 10, 15, 46);
+
+    // Re-open whatever overlay was showing before a resize
+    if (this.phase === 'won') this.showWinPanel(false);
+    else if (this.phase === 'failed') this.showFailPanel();
+    else if (this.phase === 'rushover') this.showRushOverPanel(false);
+    else if (this.paused) this.showPausePanel();
+    else this.startPlay();
+  }
+
+  private startPlay() {
+    if (this.mode === 'level') {
+      const world = worldOf(this.level);
+      if (world.intro && !progress.seenIntro(world.id)) {
+        this.showIntroPanel();
+        return;
+      }
     }
-    this.startTimer();
+    this.phase = 'play';
     crazyGames.gameplayStart();
-
-    // Handle responsive resize without losing board state
-    this.scale.on('resize', this.onResize, this);
-    this.events.once('shutdown', () => {
-      this.scale.off('resize', this.onResize, this);
-      this.timerEvent?.remove();
-    });
+    this.showLevelTip();
   }
 
-  private computeScale() {
-    this.scaleFactor = this.scale.width / BASE_WIDTH;
-  }
-
-  private generatePuzzle() {
-    if (this.board && this.scrambledBoard) {
-      return; // Board preserved across resize / orientation change
-    }
-    if (this.isDailyMode) {
-      const today = new Date().toISOString().slice(0, 10);
-      const res = scrambleDaily(today);
-      this.board = cloneBoard(res.board);
-      this.scrambledBoard = cloneBoard(res.board);
+  update(_time: number, delta: number) {
+    if (this.mode !== 'rush' || !this.rush || this.phase !== 'play' || this.paused) return;
+    this.rush.timeLeft -= Math.min(delta, 100);
+    if (this.rush.timeLeft <= 0) {
+      this.rush.timeLeft = 0;
+      this.updateRushTimer();
+      this.onRushOver();
       return;
     }
-    const result = scramble(this.level);
-    this.board = cloneBoard(result.board);
-    this.scrambledBoard = cloneBoard(result.board);
+    this.updateRushTimer();
   }
 
-  // ─── Background ─────────────────────────────────────────────────────────────
+  private snapshot(): Snapshot {
+    if (this.phase === 'transition' && this.rush) {
+      this.advanceRushPuzzle();
+      this.phase = 'play';
+    }
+    return {
+      puzzle: this.puzzle,
+      board: this.board,
+      history: this.history,
+      moves: this.moves,
+      bonus: this.bonus,
+      usedBonus: this.usedBonus,
+      phase: this.phase === 'intro' ? 'play' : this.phase,
+      stars: this.stars,
+      paused: this.paused,
+      rush: this.rush ?? undefined,
+    };
+  }
+
+  // ─── Layout & board view ────────────────────────────────────────────────────
   private drawBackground() {
-    const { width, height } = this.scale;
+    const { W, H } = this.vp;
     const bg = this.add.graphics();
     bg.fillGradientStyle(COLORS.bgDeep, COLORS.bgDeep, COLORS.bgPanel, COLORS.bgPanel, 1);
-    bg.fillRect(0, 0, width, height);
-
-    // ─── Fix #6: Replace 209 fillCircle calls (6700 GPU vertices) with 1 glow ───
-    const glow = this.add.graphics();
-    glow.fillStyle(0x00d4aa, 0.025);
-    glow.fillCircle(width / 2, height / 2, Math.min(width, height) * 0.6);
+    bg.fillRect(0, 0, W, H);
   }
 
-  // ─── High-DPI Text Helper ──────────────────────────────────────────────────
-  private createText(
-    x: number,
-    y: number,
-    text: string | string[],
-    style: Phaser.Types.GameObjects.Text.TextStyle = {},
-  ): Phaser.GameObjects.Text {
-    return this.add.text(x, y, text, {
-      fontFamily: "'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
-      resolution: 1,
-      ...style,
-    });
+  private computeBoardGeometry() {
+    const { vp } = this;
+    const n = this.puzzle.size;
+    const spanV = vp.landscape ? 400 : 300;
+    const cxV = vp.landscape ? 500 : 230;
+    const cyV = vp.landscape ? 320 : 405;
+    this.span = spanV * vp.u;
+    this.gap = Math.round(this.span * 0.028);
+    this.ts = (this.span - this.gap * (n - 1)) / n;
+    this.step = this.ts + this.gap;
+    this.bx0 = vp.x(cxV) - this.span / 2;
+    this.by0 = vp.y(cyV) - this.span / 2;
+    this.arrowSize = (vp.landscape ? 36 : 32) * vp.u;
+    this.arrowOff = this.arrowSize / 2 + 12 * vp.u;
   }
 
-  // ─── Grid rendering ─────────────────────────────────────────────────────────
-  private createGrid() {
-    const sf = this.scaleFactor;
-    const tileSize = Math.round(TILE_SIZE * sf);
-    const tileGap  = Math.round(TILE_GAP  * sf);
-    const step     = tileSize + tileGap;
-    const gridTotal = GRID_SIZE * step - tileGap;
-    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
-    const gridY    = Math.round(GRID_Y * sf);
+  private posXY(pos: number): { x: number; y: number } {
+    const n = this.puzzle.size;
+    return {
+      x: this.bx0 + (pos % n) * this.step + this.ts / 2,
+      y: this.by0 + Math.floor(pos / n) * this.step + this.ts / 2,
+    };
+  }
 
-    // Grid background card
-    const pad = Math.round(12 * sf);
-    const card = this.add.graphics();
-    card.fillStyle(COLORS.bgCard, 1);
-    card.fillRoundedRect(gridX - pad, gridY - pad,
-      gridTotal + pad * 2, gridTotal + pad * 2, Math.round(14 * sf));
-    card.lineStyle(1.5 * sf, COLORS.panelBorder, 0.8);
-    card.strokeRoundedRect(gridX - pad, gridY - pad,
-      gridTotal + pad * 2, gridTotal + pad * 2, Math.round(14 * sf));
+  private lineCenter(type: 'row' | 'col', index: number): number {
+    return (type === 'row' ? this.by0 : this.bx0) + index * this.step + this.ts / 2;
+  }
 
-    // Interactive hand cursor zone across the board
-    this.add.zone(
-      gridX + gridTotal / 2,
-      gridY + gridTotal / 2,
-      gridTotal,
-      gridTotal,
-    ).setInteractive({ useHandCursor: true });
+  private buildBoardView(popIn: boolean) {
+    for (const o of this.boardObjs) o.destroy();
+    for (const t of this.tiles) { t.tw?.stop(); t.c.destroy(); }
+    for (const a of this.arrows) a.c.destroy();
+    this.boardObjs = [];
+    this.tiles = [];
+    this.arrows = [];
+    this.clearHint();
 
-    this.tileSprites = [];
-    this.tileMap.clear(); // Fix #3: reset lookup map on each scene create
-    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-      const row = Math.floor(i / GRID_SIZE);
-      const col = i % GRID_SIZE;
-      const x = Math.round(gridX + col * step + tileSize / 2);
-      const y = Math.round(gridY + row * step + tileSize / 2);
-      const value = this.board[i];
+    this.computeBoardGeometry();
+    this.drawBoardCard();
+    this.createTiles(popIn);
+    this.createArrowsAndRules();
+    this.drawTargetPreview();
+  }
 
-      const bg = this.add.rectangle(0, 0, tileSize - Math.round(2 * sf), tileSize - Math.round(2 * sf), COLORS.tile)
-        .setStrokeStyle(1.5 * sf, COLORS.panelBorder);
-      (bg as Phaser.GameObjects.Rectangle).setOrigin(0.5);
+  private drawBoardCard() {
+    const pad = 10 * this.vp.u;
+    const g = this.add.graphics().setDepth(0);
+    g.fillStyle(COLORS.bgCard, 1);
+    g.fillRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, this.span + pad * 2, 16 * this.vp.u);
+    g.lineStyle(1.5 * this.vp.u, COLORS.panelBorder, 1);
+    g.strokeRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, this.span + pad * 2, 16 * this.vp.u);
 
-      const label = this.createText(0, 0, String(value), {
-        fontSize: `${Math.round(28 * sf)}px`,
-        fontStyle: 'bold',
-        color: '#' + COLORS.tileText.toString(16).padStart(6, '0'),
-      }).setOrigin(0.5);
-
-      const container = this.add.container(x, y, [bg, label]);
-      const tileSprite: TileSprite = { container, bg, label, value };
-      this.tileSprites.push(tileSprite);
-      this.tileMap.set(value, tileSprite); // Fix #3: O(1) map entry
+    // Empty slots
+    g.fillStyle(COLORS.slot, 1);
+    for (let i = 0; i < this.puzzle.size ** 2; i++) {
+      const p = this.posXY(i);
+      g.fillRoundedRect(p.x - this.ts / 2, p.y - this.ts / 2, this.ts, this.ts, this.ts * 0.16);
     }
 
-    this.refreshTileColors();
+    // Rule lanes (tinted bands that show between tiles and at the board edges)
+    const rules = this.puzzle.rules;
+    const lane = (type: 'row' | 'col', i: number, color: number, alpha: number) => {
+      const c = this.lineCenter(type, i);
+      const thick = this.ts + this.gap * 1.2;
+      g.fillStyle(color, alpha);
+      if (type === 'row') g.fillRoundedRect(this.bx0 - pad * 0.7, c - thick / 2, this.span + pad * 1.4, thick, 10 * this.vp.u);
+      else g.fillRoundedRect(c - thick / 2, this.by0 - pad * 0.7, thick, this.span + pad * 1.4, 10 * this.vp.u);
+    };
+    rules.lockedRows.forEach(i => lane('row', i, COLORS.lock, 0.28));
+    rules.lockedCols.forEach(i => lane('col', i, COLORS.lock, 0.28));
+    Object.keys(rules.oneWayRows).forEach(i => lane('row', +i, COLORS.conveyor, 0.3));
+    Object.keys(rules.oneWayCols).forEach(i => lane('col', +i, COLORS.conveyor, 0.3));
+    rules.links.forEach(l => { lane(l.type, l.a, COLORS.link, 0.3); lane(l.type, l.b, COLORS.link, 0.3); });
+    this.boardObjs.push(g);
   }
 
-  // ─── Arrow buttons ──────────────────────────────────────────────────────────
-  private createArrows() {
-    const sf = this.scaleFactor;
-    const tileSize  = TILE_SIZE * sf;
-    const tileGap   = TILE_GAP  * sf;
-    const gridX     = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY     = GRID_Y * sf;
-    const arrowSize = ARROW_SIZE * sf;
-    const arrowMrg  = ARROW_MARGIN * sf;
+  private tileColor(id: number): number {
+    const p = this.puzzle;
+    if (p.kind === 'pattern') return PATTERN_COLORS[p.keys[id]] ?? PATTERN_COLORS[0];
+    return ROW_COLORS[Math.floor(p.target.indexOf(p.keys[id]) / p.size)] ?? ROW_COLORS[0];
+  }
 
-    this.arrowBtns = [];
-
-    for (let i = 0; i < GRID_SIZE; i++) {
-      const cellMid = i * (tileSize + tileGap) + tileSize / 2;
-
-      // Row: left arrow
-      this.makeArrow(
-        gridX - arrowMrg - arrowSize / 2,
-        gridY + cellMid,
-        '←', 'row', i, 'left', arrowSize);
-
-      // Row: right arrow
-      this.makeArrow(
-        gridX + GRID_TOTAL * sf + arrowMrg + arrowSize / 2,
-        gridY + cellMid,
-        '→', 'row', i, 'right', arrowSize);
-
-      // Col: up arrow
-      this.makeArrow(
-        gridX + cellMid,
-        gridY - arrowMrg - arrowSize / 2,
-        '↑', 'col', i, 'up', arrowSize);
-
-      // Col: down arrow
-      this.makeArrow(
-        gridX + cellMid,
-        gridY + GRID_TOTAL * sf + arrowMrg + arrowSize / 2,
-        '↓', 'col', i, 'down', arrowSize);
+  private createTiles(popIn: boolean) {
+    const p = this.puzzle;
+    const n = p.size * p.size;
+    this.tiles = new Array(n);
+    for (let pos = 0; pos < n; pos++) {
+      const id = this.board[pos];
+      const { x, y } = this.posXY(pos);
+      const bg = this.add.rectangle(0, 0, this.ts, this.ts, this.tileColor(id)).setRounded(this.ts * 0.16);
+      const parts: Phaser.GameObjects.GameObject[] = [bg];
+      if (p.kind === 'numbers') {
+        parts.push(text(this, 0, 0, String(p.keys[id] + 1), this.ts * 0.42, COLORS.bgDeep, true));
+      }
+      const c = this.add.container(x, y, parts).setDepth(2);
+      if (popIn) {
+        c.setScale(0.6).setAlpha(0);
+        this.tweens.add({ targets: c, scale: 1, alpha: 1, duration: 200, delay: pos * 12, ease: 'Back.Out' });
+      }
+      this.tiles[id] = { id, c, bg, tw: null, correct: false };
     }
   }
 
-  private makeArrow(
-    x: number, y: number,
-    symbol: string,
-    type: 'row' | 'col',
-    index: number,
-    direction: ShiftDirection,
-    size: number,
-  ): void {
-    const bg = this.add.rectangle(0, 0, size, size, COLORS.arrowBg)
-      .setStrokeStyle(1.5 * this.scaleFactor, COLORS.arrowStroke)
-      .setOrigin(0.5) as Phaser.GameObjects.Rectangle;
-    (bg as unknown as { setRoundedRectangle: (r: number) => void });
+  private createArrowsAndRules() {
+    const { rules, size } = this.puzzle;
+    const u = this.vp.u;
+    const g = this.add.graphics().setDepth(1);
+    this.boardObjs.push(g);
 
-    const icon = this.createText(0, 0, symbol, {
-      fontSize: `${Math.round(size * 0.48)}px`,
-      color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
+    for (const type of ['row', 'col'] as const) {
+      for (let i = 0; i < size; i++) {
+        const c = this.lineCenter(type, i);
+        const ends = type === 'row'
+          ? [{ x: this.bx0 - this.arrowOff, y: c, dir: 'left' as const }, { x: this.bx0 + this.span + this.arrowOff, y: c, dir: 'right' as const }]
+          : [{ x: c, y: this.by0 - this.arrowOff, dir: 'up' as const }, { x: c, y: this.by0 + this.span + this.arrowOff, dir: 'down' as const }];
 
-    const container = this.add.container(x, y, [bg, icon]);
-    const touchSize = Math.max(size, 48 * this.scaleFactor);
-    container.setSize(touchSize, touchSize);
-    container.setInteractive({ useHandCursor: true });
+        if (isLocked(rules, type, i)) {
+          for (const e of ends) drawLock(g, e.x, e.y, this.arrowSize * 0.7, COLORS.lock);
+          continue;
+        }
+        const ow = oneWayDir(rules, type, i);
+        const linked = rules.links.some(l => l.type === type && (l.a === i || l.b === i));
+        for (const e of ends) {
+          if (ow && ow !== e.dir) {
+            // Flow marker on the far end of a conveyor
+            this.drawTriangle(g, e.x, e.y, this.arrowSize * 0.3, ow as ShiftDirection, COLORS.conveyor, 0.45);
+            continue;
+          }
+          const tint = ow ? COLORS.conveyor : linked ? COLORS.link : COLORS.accent;
+          this.makeArrow({ type, index: i, direction: e.dir }, e.x, e.y, tint);
+        }
+      }
+    }
 
-    // Hover effects
-    container.on('pointerover', () => {
-      bg.setFillStyle(COLORS.arrowHover);
-      icon.setStyle({ color: '#' + COLORS.accentHover.toString(16).padStart(6, '0') });
-      this.tweens.add({ targets: container, scaleX: 1.08, scaleY: 1.08, duration: 80, ease: 'Back.Out' });
+    // Link connectors drawn just outside the arrows
+    for (const l of rules.links) {
+      const a = this.lineCenter(l.type, l.a);
+      const b = this.lineCenter(l.type, l.b);
+      const off = this.arrowOff + this.arrowSize / 2 + 9 * u;
+      g.lineStyle(3 * u, COLORS.link, 0.9);
+      if (l.type === 'row') {
+        const x = this.bx0 - off;
+        g.lineBetween(x, a, x, b);
+        g.fillStyle(COLORS.link, 1).fillCircle(x, a, 4 * u).fillCircle(x, b, 4 * u);
+      } else {
+        const y = this.by0 - off;
+        g.lineBetween(a, y, b, y);
+        g.fillStyle(COLORS.link, 1).fillCircle(a, y, 4 * u).fillCircle(b, y, 4 * u);
+      }
+    }
+  }
+
+  private drawTriangle(g: Phaser.GameObjects.Graphics, x: number, y: number, r: number, dir: ShiftDirection, color: number, alpha: number) {
+    const pts: Record<ShiftDirection, number[]> = {
+      left: [x - r, y, x + r * 0.7, y - r, x + r * 0.7, y + r],
+      right: [x + r, y, x - r * 0.7, y - r, x - r * 0.7, y + r],
+      up: [x, y - r, x - r, y + r * 0.7, x + r, y + r * 0.7],
+      down: [x, y + r, x - r, y - r * 0.7, x + r, y - r * 0.7],
+    };
+    const p = pts[dir];
+    g.fillStyle(color, alpha);
+    g.fillTriangle(p[0], p[1], p[2], p[3], p[4], p[5]);
+  }
+
+  private makeArrow(move: MoveRecord, x: number, y: number, tint: number) {
+    const s = this.arrowSize;
+    const bg = this.add.rectangle(0, 0, s, s, COLORS.arrowBg).setRounded(s * 0.28)
+      .setStrokeStyle(1.5 * this.vp.u, tint, 0.55);
+    const g = this.add.graphics();
+    this.drawTriangle(g, 0, 0, s * 0.22, move.direction, tint, 1);
+    const c = this.add.container(x, y, [bg, g]).setDepth(3);
+    // Generous touch target: as wide as the line, never overlapping the neighbour's
+    const across = Math.min(Math.max(s, 44 * this.vp.u), this.step * 0.98);
+    if (move.type === 'row') c.setSize(s * 1.3, across);
+    else c.setSize(across, s * 1.3);
+    c.setInteractive({ useHandCursor: true });
+    c.on('pointerover', () => bg.setFillStyle(COLORS.arrowHover));
+    c.on('pointerout', () => bg.setFillStyle(COLORS.arrowBg));
+    c.on('pointerdown', () => {
+      sounds.resume();
+      this.tweens.add({ targets: c, scale: 0.86, duration: 50, yoyo: true });
+      this.tryMove(move);
     });
-    container.on('pointerout', () => {
-      bg.setFillStyle(COLORS.arrowBg);
-      icon.setStyle({ color: '#' + COLORS.accent.toString(16).padStart(6, '0') });
-      this.tweens.add({ targets: container, scaleX: 1, scaleY: 1, duration: 80 });
-    });
-    container.on('pointerdown', () => {
-      this.tweens.add({ targets: container, scaleX: 0.9, scaleY: 0.9, duration: 50, yoyo: true });
-      this.doShift(type, index, direction, false);
-    });
+    this.arrows.push({ move, c });
+  }
 
-    const btn: ArrowBtn = { container, bg, icon, type, index, direction };
-    this.arrowBtns.push(btn);
+  private drawTargetPreview() {
+    if (this.puzzle.kind !== 'pattern') return;
+    const { vp } = this;
+    const n = this.puzzle.size;
+    const cell = (vp.landscape ? 18 : 11) * vp.u;
+    const g2 = 2 * vp.u;
+    const total = n * cell + (n - 1) * g2;
+    const cx = vp.landscape ? vp.x(160) : vp.x(262);
+    const cy = vp.landscape ? vp.y(440) : vp.y(182);
+    const g = this.add.graphics().setDepth(1);
+    for (let i = 0; i < n * n; i++) {
+      g.fillStyle(PATTERN_COLORS[this.puzzle.target[i]], 1);
+      g.fillRoundedRect(cx - total / 2 + (i % n) * (cell + g2), cy - total / 2 + Math.floor(i / n) * (cell + g2), cell, cell, cell * 0.2);
+    }
+    const label = vp.landscape
+      ? text(this, cx, cy - total / 2 - 18 * vp.u, `Target: ${this.puzzle.patternName ?? ''}`, 14 * vp.u, COLORS.textMuted, true)
+      : text(this, cx - total / 2 - 12 * vp.u, cy, 'Target', 13 * vp.u, COLORS.textMuted, true).setOrigin(1, 0.5);
+    this.boardObjs.push(g, label);
   }
 
   // ─── HUD ────────────────────────────────────────────────────────────────────
-  private createHUD() {
-    const sf = this.scaleFactor;
-    const cx = this.scale.width / 2;
+  private createHud() {
+    const { vp } = this;
+    const u = vp.u;
+    const L = vp.landscape;
+    const world = worldOf(this.level);
+    const title = this.mode === 'rush' ? 'Shift Rush' : `Level ${this.level}`;
+    const sub = this.mode === 'rush' ? `Best: ${progress.rushBest()} boards` : `World ${world.id} · ${world.name}`;
 
-    // Title
-    this.createText(cx, 12 * sf, 'ONE SHIFT', {
-      fontSize: `${Math.round(24 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
+    text(this, vp.x(L ? 160 : 230), vp.y(L ? 150 : 32), title, (L ? 30 : 22) * u, COLORS.text, true);
+    text(this, vp.x(L ? 160 : 230), vp.y(L ? 184 : 56), sub, (L ? 14 : 12) * u, COLORS.textMuted);
 
-    // Explicit Objective Reminder
-    this.createText(cx, 34 * sf, 'Goal: Order tiles 1–16', {
-      fontSize: `${Math.round(11 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
+    this.movesText = text(this, vp.x(L ? 160 : 120), vp.y(L ? 250 : 90), '', (L ? 20 : 17) * u, COLORS.text, true);
+    this.starsText = text(this, vp.x(L ? 160 : 340), vp.y(L ? 288 : 90), '', (L ? 26 : 22) * u, COLORS.warning, true);
+    this.subText = text(this, vp.x(L ? 160 : 340), vp.y(L ? 318 : 112), '', (L ? 13 : 11) * u, COLORS.textMuted);
 
-    if (this.isDailyMode) {
-      const streak = parseInt(crazyGames.getItem('oneshift_daily_streak') || '0', 10);
-      const streakTxt = streak > 0 ? ` (🔥 ${streak} Streak)` : '';
-      this.createText(cx, 50 * sf, `📅 TODAY'S CHALLENGE${streakTxt}`, {
-        fontSize: `${Math.round(15 * sf)}px`,
-        fontStyle: 'bold',
-        color: '#f5a623',
-      }).setOrigin(0.5, 0);
+    // Progress bar (tiles placed) / timer bar in Rush
+    this.barW = (L ? 170 : 300) * u;
+    const bx = vp.x(L ? 155 : 230);
+    const by = vp.y(L ? 354 : 136);
+    this.add.rectangle(bx, by, this.barW, 8 * u, COLORS.slot).setRounded(4 * u);
+    this.barFill = this.add.rectangle(bx - this.barW / 2, by, this.barW, 8 * u,
+      this.mode === 'rush' ? COLORS.warning : COLORS.accent).setOrigin(0, 0.5).setRounded(4 * u);
+    this.barFrac = { v: 0 };
+    this.drawBar();
+
+    // Rule legend
+    const legend = this.ruleLegend();
+    legend.forEach((line, k) => {
+      const y = L ? vp.y(520 + k * 26) : vp.y(626 + k * 22);
+      const x = vp.x(L ? 160 : 230);
+      const t = text(this, x + 8 * u, y, line.label, (L ? 13 : 12) * u, COLORS.textMuted);
+      this.add.rectangle(x - t.width / 2 - 6 * u, y, 10 * u, 10 * u, line.color).setRounded(3 * u);
+    });
+
+    // Top bar: map + sound
+    button(this, vp.x(L ? 70 : 46), vp.y(L ? 44 : 32), (L ? 96 : 72) * u, (L ? 40 : 34) * u, 'Map', () => this.goMap(), { fontPx: (L ? 16 : 14) * u });
+    const sound = button(this, vp.x(L ? 935 : 418), vp.y(L ? 44 : 32), (L ? 96 : 64) * u, (L ? 40 : 34) * u,
+      sounds.isMuted() ? 'Sound off' : 'Sound', () => {
+        const muted = sounds.toggleMute();
+        sound.label.setText(muted ? 'Sound off' : 'Sound');
+      }, { fontPx: (L ? 14 : 11) * u, silent: true });
+  }
+
+  private ruleLegend(): { label: string; color: number }[] {
+    const r = this.puzzle.rules;
+    const out: { label: string; color: number }[] = [];
+    if (r.lockedRows.length || r.lockedCols.length) out.push({ label: "Locked lines can't slide", color: COLORS.lock });
+    if (Object.keys(r.oneWayRows).length || Object.keys(r.oneWayCols).length) out.push({ label: 'Gold lines slide one way only', color: COLORS.conveyor });
+    if (r.links.length) out.push({ label: 'Pink lines move together', color: COLORS.link });
+    return out;
+  }
+
+  private createButtons() {
+    const { vp } = this;
+    const u = vp.u;
+    const L = vp.landscape;
+    const w = (L ? 150 : 108) * u;
+    const h = (L ? 50 : 46) * u;
+    const fs = (L ? 18 : 16) * u;
+    const pos = (k: number) => L ? { x: vp.x(845), y: vp.y(240 + k * 70) } : { x: vp.x(108 + k * 122), y: vp.y(700) };
+
+    this.undoBtn = button(this, pos(0).x, pos(0).y, w, h, 'Undo', () => this.undoLast(), { fontPx: fs });
+    if (this.mode === 'level') {
+      button(this, pos(1).x, pos(1).y, w, h, 'Hint', () => this.showHint(true), { fontPx: fs });
     } else {
-      // Level display with navigation arrows
-      const maxUnlocked = parseInt(crazyGames.getItem('oneshift_max_unlocked') || '1', 10);
-      const canPrev = this.level > 1;
-      const canNext = this.level < maxUnlocked;
-
-      this.createText(cx, 50 * sf, `Level ${this.level}`, {
-        fontSize: `${Math.round(15 * sf)}px`,
-        fontStyle: 'bold',
-        color: '#' + COLORS.text.toString(16).padStart(6, '0'),
-      }).setOrigin(0.5, 0);
-
-      // Prev Level Arrow (◀)
-      const prevBtn = this.createText(cx - 58 * sf, 48 * sf, '◀', {
-        fontSize: `${Math.round(15 * sf)}px`,
-        color: canPrev ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
-      }).setOrigin(0.5, 0);
-
-      if (canPrev) {
-        prevBtn.setInteractive({ useHandCursor: true });
-        prevBtn.on('pointerdown', () => {
-          sounds.playClick();
-          this.goToLevel(this.level - 1);
-        });
-      }
-
-      // Next Level Arrow (▶)
-      const nextBtn = this.createText(cx + 58 * sf, 48 * sf, '▶', {
-        fontSize: `${Math.round(15 * sf)}px`,
-        color: canNext ? '#' + COLORS.accent.toString(16).padStart(6, '0') : '#364066',
-      }).setOrigin(0.5, 0);
-
-      if (canNext) {
-        nextBtn.setInteractive({ useHandCursor: true });
-        nextBtn.on('pointerdown', () => {
-          sounds.playClick();
-          this.goToLevel(this.level + 1);
-        });
-      }
+      button(this, pos(1).x, pos(1).y, w, h, 'Skip −5s', () => this.skipRushBoard(), { fontPx: fs * 0.9 });
     }
-
-    // Par & Dynamic Star Meter
-    this.parStarsText = this.createText(cx, 70 * sf, this.getParStarsString(), {
-      fontSize: `${Math.round(13 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#f5a623',
-    }).setOrigin(0.5, 0);
-
-    // Stats row
-    const statY = 94 * sf;
-    const statSpan = 140 * sf;
-
-    // Moves
-    this.createText(cx - statSpan, statY, 'MOVES', {
-      fontSize: `${Math.round(10 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-    this.movesText = this.createText(cx - statSpan, statY + 14 * sf, '0', {
-      fontSize: `${Math.round(22 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.text.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-
-    // Timer
-    this.createText(cx, statY, 'TIME', {
-      fontSize: `${Math.round(10 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-    this.timerText = this.createText(cx, statY + 14 * sf, '0:00', {
-      fontSize: `${Math.round(22 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.text.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-
-    // Best (persisted in CrazyGames Data Module / localStorage per level)
-    const savedBest = this.isDailyMode ? null : crazyGames.getItem('oneshift_best_lvl_' + this.level);
-    const bestVal = savedBest ? parseInt(savedBest, 10) : (this.isDailyMode ? null : (bestMoves[this.level] ?? null));
-
-    this.createText(cx + statSpan, statY, 'BEST', {
-      fontSize: `${Math.round(10 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-    this.bestText = this.createText(cx + statSpan, statY + 14 * sf, bestVal != null ? String(bestVal) : '—', {
-      fontSize: `${Math.round(22 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.textAccent.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5, 0);
-
-    // Audio Mute / Unmute Button
-    const muteIcon = this.createText(this.scale.width - 28 * sf, 26 * sf, sounds.isMuted() ? '🔇' : '🔊', {
-      fontSize: `${Math.round(20 * sf)}px`,
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-
-    muteIcon.on('pointerdown', () => {
-      const isMuted = sounds.toggleMute();
-      muteIcon.setText(isMuted ? '🔇' : '🔊');
-    });
+    button(this, pos(2).x, pos(2).y, w, h, 'Retry', () => this.retry(), { fontPx: fs });
   }
 
-  private getParStarsString(): string {
-    const par = this.isDailyMode ? 6 : getParMoves(this.level);
-    let stars = '★★★';
-    if (this.moveCount > par + 2) {
-      stars = '★☆☆';
-    } else if (this.moveCount > par) {
-      stars = '★★☆';
-    }
-    return `PAR: ${par}  |  ${stars}`;
+  private movesLeft(): number {
+    return this.puzzle.limit > 0 ? this.puzzle.limit + this.bonus - this.moves : Infinity;
   }
 
-  private updateParStars() {
-    if (!this.parStarsText) return;
-    this.parStarsText.setText(this.getParStarsString());
-    const par = getParMoves(this.level);
-    if (this.moveCount <= par) {
-      this.parStarsText.setStyle({ color: '#f5a623' });
-    } else if (this.moveCount <= par + 2) {
-      this.parStarsText.setStyle({ color: '#d4af37' });
+  private currentStars(): number {
+    const par = this.puzzle.par;
+    if (this.moves <= par) return 3;
+    if (this.moves <= par + 2) return 2;
+    return 1;
+  }
+
+  private updateHud() {
+    const p = this.puzzle;
+    if (this.mode === 'rush' && this.rush) {
+      this.movesText.setText(`Solved: ${this.rush.score}`);
+      this.subText.setText(`Board ${this.rush.index + 1} · ${p.par} move${p.par > 1 ? 's' : ''}`);
+      this.updateRushTimer();
     } else {
-      this.parStarsText.setStyle({ color: '#8899aa' });
+      if (p.limit > 0) {
+        const left = this.movesLeft();
+        this.movesText.setText(`Moves left: ${left}`);
+        this.movesText.setColor(hex(left <= 2 ? COLORS.danger : COLORS.text));
+      } else {
+        this.movesText.setText(`Moves: ${this.moves}`);
+      }
+      const st = this.currentStars();
+      this.starsText.setText(starString(st));
+      this.subText.setText(`★★★ in ${p.par} move${p.par > 1 ? 's' : ''}`);
+    }
+    this.undoBtn.setAlpha(this.history.length ? 1 : 0.5);
+  }
+
+  private updateRushTimer() {
+    if (!this.rush) return;
+    const s = Math.ceil(this.rush.timeLeft / 1000);
+    this.starsText.setText(`${s}s`);
+    this.starsText.setColor(hex(s <= 10 ? COLORS.danger : COLORS.warning));
+    this.barFrac.v = Phaser.Math.Clamp(this.rush.timeLeft / RUSH_MAX_MS, 0, 1);
+    this.drawBar();
+  }
+
+  // Shapes must be resized with setSize (assigning .width does not redraw them)
+  private drawBar() {
+    const w = Math.max(0.001, this.barW * this.barFrac.v);
+    this.barFill.setSize(w, this.barFill.height).setRounded(Math.min(this.barFill.height / 2, w / 2));
+    this.barFill.setVisible(this.barFrac.v > 0.005);
+  }
+
+  private setProgress(animate: boolean) {
+    if (this.mode === 'rush') return;
+    const frac = correctCount(this.board, this.puzzle) / this.board.length;
+    this.tweens.killTweensOf(this.barFrac);
+    if (animate) {
+      this.tweens.add({ targets: this.barFrac, v: frac, duration: 220, ease: 'Cubic.Out', onUpdate: () => this.drawBar() });
+    } else {
+      this.barFrac.v = frac;
+      this.drawBar();
     }
   }
 
-  // ─── Control buttons (Undo, Restart, New Game, Pause, How To) ───────────────
-  private createControlButtons() {
-    const sf = this.scaleFactor;
-    const gridBottom = GRID_Y * sf + GRID_TOTAL * sf;
-    const btnY = gridBottom + (ARROW_SIZE + ARROW_MARGIN * 2 + 22) * sf;
-
-    const w = this.scale.width;
-    const bw = 88 * sf;
-    const bh = 36 * sf;
-    const gap = 8 * sf;
-    const total = bw * 3 + gap * 2;
-    const startX = (w - total) / 2;
-
-    this.undoBtn    = this.makeControlBtn(startX + bw * 0 + gap * 0 + bw / 2, btnY, '↩ Undo',    bw, bh);
-    this.restartBtn = this.makeControlBtn(startX + bw * 1 + gap * 1 + bw / 2, btnY, '⟳ Restart', bw, bh);
-    this.newGameBtn = this.makeControlBtn(startX + bw * 2 + gap * 2 + bw / 2, btnY, '⊕ New',     bw, bh);
-
-    this.undoBtn.on('pointerdown',    () => this.doUndo());
-    this.restartBtn.on('pointerdown', () => this.doRestart());
-    this.newGameBtn.on('pointerdown', () => this.doNewGame());
-
-    const row2Y = btnY + bh + 10 * sf;
-    this.hintBtn   = this.makeControlBtn(startX + bw * 0 + gap * 0 + bw / 2, row2Y, '💡 Hint',   bw, bh, true);
-    this.pauseBtn  = this.makeControlBtn(startX + bw * 1 + gap * 1 + bw / 2, row2Y, '⏸ Pause',  bw, bh);
-    this.howToBtn  = this.makeControlBtn(startX + bw * 2 + gap * 2 + bw / 2, row2Y, '? How To', bw, bh);
-
-    this.hintBtn.on('pointerdown',  () => this.doHint());
-    this.pauseBtn.on('pointerdown', () => this.togglePause());
-    this.howToBtn.on('pointerdown', () => this.showHowTo());
+  // ─── Info line (tutorial / tips) ────────────────────────────────────────────
+  private setInfo(msg: string, color: number = COLORS.text) {
+    const { vp } = this;
+    if (!this.infoText) {
+      this.infoText = text(this, vp.x(vp.landscape ? 160 : 230), vp.y(vp.landscape ? 450 : 184), '', (vp.landscape ? 16 : 15) * vp.u, color, true)
+        .setDepth(5).setWordWrapWidth((vp.landscape ? 250 : 400) * vp.u);
+    }
+    this.infoText.setText(msg).setColor(hex(color)).setAlpha(1);
   }
 
-  private makeControlBtn(
-    x: number, y: number, label: string,
-    w: number, h: number, accent = false,
-  ): Phaser.GameObjects.Container {
-    const sf = this.scaleFactor;
-    const bgColor = accent ? COLORS.accentDark : COLORS.arrowBg;
-    const bgHover = accent ? COLORS.accent     : COLORS.arrowHover;
-
-    const bg = this.add.rectangle(0, 0, w, h, bgColor)
-      .setStrokeStyle(1.5 * sf, accent ? COLORS.accent : COLORS.arrowStroke)
-      .setOrigin(0.5) as Phaser.GameObjects.Rectangle;
-
-    const txt = this.createText(0, 0, label, {
-      fontSize: `${Math.round(13 * sf)}px`,
-      fontStyle: 'bold',
-      color: accent ? '#' + COLORS.bgDeep.toString(16).padStart(6, '0')
-                    : '#' + COLORS.text.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
-
-    const c = this.add.container(x, y, [bg, txt]);
-    c.setSize(w, h);
-    c.setInteractive({ useHandCursor: true });
-
-    c.on('pointerover', () => {
-      bg.setFillStyle(bgHover);
-      this.tweens.add({ targets: c, scaleX: 1.04, scaleY: 1.04, duration: 80 });
-    });
-    c.on('pointerout', () => {
-      bg.setFillStyle(bgColor);
-      this.tweens.add({ targets: c, scaleX: 1, scaleY: 1, duration: 80 });
-    });
-    c.on('pointerdown', () => {
-      sounds.playClick();
-      this.tweens.add({ targets: c, scaleX: 0.94, scaleY: 0.94, duration: 60 });
-    });
-    c.on('pointerup',   () => this.tweens.add({ targets: c, scaleX: 1,    scaleY: 1,    duration: 80 }));
-
-    return c;
-  }
-
-  // ─── Pause overlay ──────────────────────────────────────────────────────────
-  private createPauseOverlay() {
-    const { width, height } = this.scale;
-    const sf = this.scaleFactor;
-
-    const darken = this.add.rectangle(0, 0, width, height, 0x000000, 0.75).setOrigin(0);
-    const panel = this.add.rectangle(width / 2, height / 2, 300 * sf, 200 * sf, COLORS.panelBg)
-      .setStrokeStyle(2 * sf, COLORS.accent);
-
-    const title = this.createText(width / 2, height / 2 - 60 * sf, 'PAUSED', {
-      fontSize: `${Math.round(30 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
-
-    const sub = this.createText(width / 2, height / 2 - 10 * sf, 'Tap Resume to continue', {
-      fontSize: `${Math.round(14 * sf)}px`,
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
-
-    const resumeBtn = this.makeControlBtn(width / 2, height / 2 + 45 * sf, '▶ Resume', 140 * sf, 44 * sf, true);
-    resumeBtn.on('pointerup', () => this.togglePause());
-
-    this.pauseOverlay = this.add.container(0, 0, [darken, panel, title, sub, resumeBtn]);
-    this.pauseOverlay.setVisible(false);
-    this.pauseOverlay.setDepth(10);
-  }
-
-  // ─── How To overlay ─────────────────────────────────────────────────────────
-  private createHowToOverlay() {
-    const { width, height } = this.scale;
-    const sf = this.scaleFactor;
-
-    const darken = this.add.rectangle(0, 0, width, height, 0x000000, 0.8).setOrigin(0);
-    const panW = Math.min(360 * sf, width - 30 * sf);
-    const panH = 420 * sf;
-    const panel = this.add.rectangle(width / 2, height / 2, panW, panH, COLORS.panelBg)
-      .setStrokeStyle(2 * sf, COLORS.accent);
-
-    const items: Phaser.GameObjects.GameObject[] = [darken, panel];
-
-    const addLine = (text: string, dy: number, size = 13, color: number = COLORS.text, style = '') => {
-      const hexColor = '#' + color.toString(16).padStart(6, '0');
-      items.push(this.createText(width / 2, height / 2 + dy * sf, text, {
-        fontSize: `${Math.round(size * sf)}px`,
-        fontStyle: style,
-        color: hexColor,
-        align: 'center',
-        wordWrap: { width: panW - 30 * sf },
-      }).setOrigin(0.5));
+  private showLevelTip() {
+    if (this.mode !== 'level' || this.puzzle.kind === 'pattern') return;
+    if (this.level <= 2) {
+      this.showHint(false);
+      return;
+    }
+    const tips: Record<number, string> = {
+      3: 'Two moves this time. Undo is free.',
+      4: 'Moves are limited now. Fewer moves = more stars.',
+      11: 'Tile colour shows which row it belongs to.',
     };
-
-    addLine('HOW TO PLAY', -185, 20, COLORS.accent, 'bold');
-    addLine('Goal: arrange tiles 1–16 in order,\nleft→right, top→bottom.', -148, 12);
-    addLine('─────────────────────', -115, 10, COLORS.textMuted);
-    addLine('Tap the arrows to shift\nan entire row or column.', -95, 12);
-    addLine('Tiles wrap around the edge!', -65, 11, COLORS.textMuted);
-    addLine('─────────────────────', -42, 10, COLORS.textMuted);
-    addLine('⌨️  Keyboard Controls', -22, 13, COLORS.accent, 'bold');
-    addLine('Arrow Keys → shift selected row/col', 0, 11);
-    addLine('W A S D → select row/column', 20, 11);
-    addLine('Tab → switch row ↔ column mode', 40, 11);
-    addLine('─────────────────────', 65, 10, COLORS.textMuted);
-    addLine('↩  Undo  |  ⟳ Restart  |  ⊕ New Game', 85, 11);
-
-    const closeBtn = this.makeControlBtn(width / 2, height / 2 + 170 * sf, '✓ Got It', 140 * sf, 44 * sf, true);
-    closeBtn.on('pointerup', () => this.hideHowTo());
-    items.push(closeBtn);
-
-    this.howToOverlay = this.add.container(0, 0, items);
-    this.howToOverlay.setVisible(false);
-    this.howToOverlay.setDepth(10);
+    if (tips[this.level]) this.setInfo(tips[this.level], COLORS.textMuted);
   }
 
-  // ─── Keyboard selection indicator ───────────────────────────────────────────
-  private createSelectionIndicator() {
-    this.selectionIndicator = this.add.graphics();
-    this.selectionIndicator.setVisible(false);
-    this.selectionIndicator.setDepth(5);
+  private moveDescription(m: MoveRecord): string {
+    const n = this.puzzle.size;
+    const names3 = { row: ['top row', 'middle row', 'bottom row'], col: ['left column', 'middle column', 'right column'] };
+    const name = n === 3 ? names3[m.type][m.index] : `${m.type === 'row' ? 'row' : 'column'} ${m.index + 1}`;
+    return `Swipe the ${name} ${m.direction}`;
   }
 
-  private drawSelectionIndicator() {
-    const sf = this.scaleFactor;
-    const tileSize = TILE_SIZE * sf;
-    const tileGap  = TILE_GAP  * sf;
-    const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY    = GRID_Y * sf;
+  // ─── Input ──────────────────────────────────────────────────────────────────
+  private setupInput() {
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
+      sounds.resume();
+      if (this.paused && this.phase === 'play') { this.resumeFromPause(); return; }
+      if (over.length || this.phase !== 'play' || this.drag) return;
+      const m = this.gap * 1.5;
+      const rx = p.x - this.bx0;
+      const ry = p.y - this.by0;
+      if (rx < -m || ry < -m || rx > this.span + m || ry > this.span + m) return;
+      const n = this.puzzle.size;
+      this.drag = {
+        id: p.id, x0: p.x, y0: p.y, t0: p.downTime,
+        row: Phaser.Math.Clamp(Math.floor(ry / this.step), 0, n - 1),
+        col: Phaser.Math.Clamp(Math.floor(rx / this.step), 0, n - 1),
+        axis: null, fired: 0, blocked: false,
+      };
+    });
 
-    this.selectionIndicator.clear();
-    this.selectionIndicator.lineStyle(2.5, COLORS.accentHover, 0.9);
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      const d = this.drag;
+      if (!d || p.id !== d.id || this.phase !== 'play') return;
+      const dx = p.x - d.x0;
+      const dy = p.y - d.y0;
+      const th = Math.max(this.ts * 0.2, 9 * this.vp.u);
+      if (!d.axis) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < th) return;
+        d.axis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      }
+      const dist = d.axis === 'x' ? dx : dy;
+      const a = Math.abs(dist);
+      const n = this.puzzle.size;
+      const target = a < th ? 0 : Math.sign(dist) * Math.min(n - 1, 1 + Math.floor((a - th) / (this.step * 0.85)));
+      this.syncDrag(d, target);
+    });
 
-    if (this.keyboardMode) {
-      // Highlight selected row
-      const rx = gridX - 3 * sf;
-      const ry = gridY + this.selectedRow * (tileSize + tileGap) - 3 * sf;
-      const rw = GRID_TOTAL * sf + 6 * sf;
-      const rh = tileSize + 6 * sf;
-      this.selectionIndicator.strokeRect(rx, ry, rw, rh);
+    const end = (p: Phaser.Input.Pointer) => {
+      const d = this.drag;
+      if (!d || p.id !== d.id) return;
+      this.drag = null;
+      if (d.axis || this.phase !== 'play') return;
+      // Quick flick that never crossed the drag threshold
+      const dx = p.x - d.x0;
+      const dy = p.y - d.y0;
+      const dt = Math.max(1, p.upTime - d.t0);
+      const dist = Math.max(Math.abs(dx), Math.abs(dy));
+      if (dist >= this.ts * 0.1 && dt < 220) {
+        const horiz = Math.abs(dx) >= Math.abs(dy);
+        this.tryMove(horiz
+          ? { type: 'row', index: d.row, direction: dx > 0 ? 'right' : 'left' }
+          : { type: 'col', index: d.col, direction: dy > 0 ? 'down' : 'up' });
+      } else {
+        // A tap selects that row and column for keyboard play
+        this.selRow = d.row;
+        this.selCol = d.col;
+        this.drawSelection();
+      }
+    };
+    this.input.on('pointerup', end);
+    this.input.on('pointerupoutside', end);
+    this.input.on('gameout', () => { this.drag = null; });
+    this.game.events.on('blur', this.cancelDrag, this);
+    this.events.once('shutdown', () => this.game.events.off('blur', this.cancelDrag, this));
+  }
 
-      // Dim label
-      this.selectionIndicator.fillStyle(COLORS.accentHover, 0.08);
-      this.selectionIndicator.fillRect(rx, ry, rw, rh);
+  private cancelDrag() {
+    this.drag = null;
+  }
+
+  /** Makes the board follow a drag: one shift per tile dragged, dragging back undoes. */
+  private syncDrag(d: DragState, target: number) {
+    let guard = 0;
+    while (d.fired !== target && !d.blocked && guard++ < 8) {
+      const forward = d.fired === 0 || (Math.sign(d.fired) === Math.sign(target) && Math.abs(target) > Math.abs(d.fired));
+      if (forward) {
+        const sgn = Math.sign(target);
+        const move: MoveRecord = d.axis === 'x'
+          ? { type: 'row', index: d.row, direction: sgn > 0 ? 'right' : 'left' }
+          : { type: 'col', index: d.col, direction: sgn > 0 ? 'down' : 'up' };
+        if (!this.tryMove(move)) { d.blocked = true; return; }
+        d.fired += sgn;
+      } else {
+        if (!this.undoLast()) return;
+        d.fired -= Math.sign(d.fired);
+      }
     }
   }
 
-  // ─── Keyboard input ─────────────────────────────────────────────────────────
   private setupKeyboard() {
-    if (!this.input.keyboard) return;
-    this.input.keyboard.createCursorKeys(); // registers keys even if not stored
-
-    this.input.keyboard.on('keydown', (event: KeyboardEvent) => {
-      if (this.paused || this.animating) return;
-      if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
-
-      switch (event.code) {
-        case 'ArrowLeft':  this.keyboardMode = true; this.drawSelectionIndicator(); this.selectionIndicator.setVisible(true); this.doShift('row', this.selectedRow, 'left'); break;
-        case 'ArrowRight': this.keyboardMode = true; this.drawSelectionIndicator(); this.selectionIndicator.setVisible(true); this.doShift('row', this.selectedRow, 'right'); break;
-        case 'ArrowUp':    this.keyboardMode = true; this.drawSelectionIndicator(); this.selectionIndicator.setVisible(true); this.doShift('col', this.selectedCol, 'up'); break;
-        case 'ArrowDown':  this.keyboardMode = true; this.drawSelectionIndicator(); this.selectionIndicator.setVisible(true); this.doShift('col', this.selectedCol, 'down'); break;
-        case 'KeyW': this.selectedRow = Math.max(0, this.selectedRow - 1); this.drawSelectionIndicator(); break;
-        case 'KeyS': this.selectedRow = Math.min(GRID_SIZE - 1, this.selectedRow + 1); this.drawSelectionIndicator(); break;
-        case 'KeyA': this.selectedCol = Math.max(0, this.selectedCol - 1); break;
-        case 'KeyD': this.selectedCol = Math.min(GRID_SIZE - 1, this.selectedCol + 1); break;
-        case 'KeyZ': this.doUndo(); break;
-        case 'KeyR': this.doRestart(); break;
-        case 'KeyP': this.togglePause(); break;
+    const kb = this.input.keyboard;
+    if (!kb) return;
+    kb.addCapture('UP,DOWN,LEFT,RIGHT,SPACE');
+    kb.on('keydown', (e: KeyboardEvent) => {
+      sounds.resume();
+      if (this.panel) {
+        if ((e.code === 'Enter' || e.code === 'Space') && this.panelPrimary) this.panelPrimary();
+        return;
+      }
+      if (this.paused) { this.resumeFromPause(); return; }
+      if (this.phase !== 'play') return;
+      const n = this.puzzle.size;
+      const sel = () => { this.keyboardUsed = true; this.drawSelection(); };
+      switch (e.code) {
+        case 'ArrowLeft': sel(); this.tryMove({ type: 'row', index: this.selRow, direction: 'left' }); break;
+        case 'ArrowRight': sel(); this.tryMove({ type: 'row', index: this.selRow, direction: 'right' }); break;
+        case 'ArrowUp': sel(); this.tryMove({ type: 'col', index: this.selCol, direction: 'up' }); break;
+        case 'ArrowDown': sel(); this.tryMove({ type: 'col', index: this.selCol, direction: 'down' }); break;
+        case 'KeyW': this.selRow = (this.selRow + n - 1) % n; sel(); break;
+        case 'KeyS': this.selRow = (this.selRow + 1) % n; sel(); break;
+        case 'KeyA': this.selCol = (this.selCol + n - 1) % n; sel(); break;
+        case 'KeyD': this.selCol = (this.selCol + 1) % n; sel(); break;
+        case 'KeyZ': case 'Backspace': this.undoLast(); break;
+        case 'KeyR': this.retry(); break;
+        case 'KeyH': if (this.mode === 'level') this.showHint(true); break;
       }
     });
   }
 
-  // ─── Swipe controls ─────────────────────────────────────────────────────────
-  private setupSwipeControls() {
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (this.paused) return;
-      if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
-      if (this.activePointerId !== null) return; // Ignore multi-touch secondary fingers
+  private drawSelection() {
+    const g = this.selection;
+    g.clear();
+    if (!this.keyboardUsed) return;
+    const u = this.vp.u;
+    const pad = 4 * u;
+    const ry = this.lineCenter('row', this.selRow);
+    const cx = this.lineCenter('col', this.selCol);
+    g.lineStyle(2.5 * u, COLORS.accentHover, 0.9);
+    g.strokeRoundedRect(this.bx0 - pad, ry - this.ts / 2 - pad, this.span + pad * 2, this.ts + pad * 2, 10 * u);
+    g.lineStyle(2.5 * u, COLORS.warning, 0.8);
+    g.strokeRoundedRect(cx - this.ts / 2 - pad, this.by0 - pad, this.ts + pad * 2, this.span + pad * 2, 10 * u);
+  }
 
-      const sf = this.scaleFactor;
-      const tileSize = TILE_SIZE * sf;
-      const tileGap  = TILE_GAP  * sf;
-      const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
-      const gridY    = GRID_Y * sf;
-      const step     = tileSize + tileGap;
-      const gridSpan = GRID_TOTAL * sf;
+  // ─── Moves ──────────────────────────────────────────────────────────────────
+  private tryMove(move: MoveRecord): boolean {
+    if (this.phase !== 'play' || this.paused || this.panel) return false;
+    if (!canMove(move, this.puzzle.rules)) {
+      this.blockedFeedback(move);
+      return false;
+    }
+    if (this.movesLeft() <= 0) return false;
 
-      const hitMargin = 12 * sf;
-      const relX = pointer.x - gridX;
-      const relY = pointer.y - gridY;
+    const old = this.board;
+    this.board = applyMove(old, this.puzzle.size, move, this.puzzle.rules);
+    this.history.push(move);
+    this.moves++;
+    this.animateMove(move, old, this.board);
+    sounds.playSlide();
+    triggerHaptic(8);
+    this.clearHint();
+    if (this.infoText && this.level > 2) this.tweens.add({ targets: this.infoText, alpha: 0, duration: 250 });
+    this.afterBoardChange(old, false);
+    return true;
+  }
 
-      if (relX >= -hitMargin && relX <= gridSpan + hitMargin &&
-          relY >= -hitMargin && relY <= gridSpan + hitMargin) {
-        const clampedRelY = Phaser.Math.Clamp(relY, 0, gridSpan - 1);
-        const clampedRelX = Phaser.Math.Clamp(relX, 0, gridSpan - 1);
-        const r = Phaser.Math.Clamp(Math.floor(clampedRelY / step), 0, GRID_SIZE - 1);
-        const c = Phaser.Math.Clamp(Math.floor(clampedRelX / step), 0, GRID_SIZE - 1);
+  private undoLast(): boolean {
+    if (this.phase !== 'play' || this.paused || this.panel || !this.history.length) return false;
+    const rev = reverseMove(this.history.pop()!);
+    const old = this.board;
+    this.board = applyMove(old, this.puzzle.size, rev, this.puzzle.rules);
+    this.moves = Math.max(0, this.moves - 1);
+    this.animateMove(rev, old, this.board);
+    sounds.playSlide();
+    this.clearHint();
+    this.afterBoardChange(old, true);
+    return true;
+  }
 
-        this.activePointerId = pointer.id;
-        this.swipeStartX = pointer.x;
-        this.swipeStartY = pointer.y;
-        this.swipeStartTime = Date.now();
-        this.swipeRow = r;
-        this.swipeCol = c;
-        this.isSwiping = true;
+  private afterBoardChange(old: number[], isUndo: boolean) {
+    this.updateHud();
+    const p = this.puzzle;
+    const newly: number[] = [];
+    if (!isUndo) {
+      for (let i = 0; i < this.board.length; i++) {
+        if (isCorrectAt(this.board, p, i) && !isCorrectAt(old, p, i)) newly.push(this.board[i]);
       }
-    });
+    }
+    // Feedback lands as the tiles arrive
+    this.time.delayedCall(SHIFT_ANIM_MS * 0.8, () => this.refreshStates(true, newly));
 
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (!this.isSwiping || pointer.id !== this.activePointerId || this.animating) return;
-      if (this.paused) return;
+    if (isSolved(this.board, p)) {
+      this.phase = this.mode === 'rush' ? 'transition' : 'won';
+      this.drag = null;
+      this.time.delayedCall(SHIFT_ANIM_MS + 40, () => (this.mode === 'rush' ? this.onRushSolved() : this.onSolved()));
+    } else if (this.movesLeft() <= 0) {
+      this.phase = 'failed';
+      this.drag = null;
+      this.time.delayedCall(SHIFT_ANIM_MS + 260, () => this.onFail());
+    } else if (this.mode === 'level' && this.level <= 2) {
+      this.showHint(false);
+    }
+  }
 
-      const dx = pointer.x - this.swipeStartX;
-      const dy = pointer.y - this.swipeStartY;
-      const absX = Math.abs(dx);
-      const absY = Math.abs(dy);
-      const sf = this.scaleFactor;
-      // Generous threshold (22px) so natural finger placement never misfires
-      const swipeThreshold = 22 * sf;
+  private animateMove(move: MoveRecord, old: number[], next: number[]) {
+    const n = this.puzzle.size;
+    const where = new Array<number>(next.length);
+    for (let i = 0; i < next.length; i++) where[next[i]] = i;
 
-      if (absX >= swipeThreshold || absY >= swipeThreshold) {
-        if (absX >= absY * 1.2) {
-          this.isSwiping = false;
-          this.activePointerId = null;
-          this.doShift('row', this.swipeRow, dx > 0 ? 'right' : 'left', true);
-        } else if (absY >= absX * 1.2) {
-          this.isSwiping = false;
-          this.activePointerId = null;
-          this.doShift('col', this.swipeCol, dy > 0 ? 'down' : 'up', true);
-        }
+    for (const line of linesFor(move, this.puzzle.rules)) {
+      const idx = lineIndices(n, line.type, line.index);
+      const forward = line.direction === 'right' || line.direction === 'down';
+      const wrapPos = forward ? idx[n - 1] : idx[0];
+      const sgn = forward ? 1 : -1;
+      const vx = line.type === 'row' ? sgn * this.step : 0;
+      const vy = line.type === 'col' ? sgn * this.step : 0;
+      for (const pos of idx) {
+        const t = this.tiles[old[pos]];
+        const to = this.posXY(where[t.id]);
+        if (pos === wrapPos) this.tweenWrap(t, to.x, to.y, vx, vy);
+        else this.tweenSlide(t, to.x, to.y);
       }
+    }
+  }
+
+  // Tweens always start from where the tile is right now, so input never waits
+  // for a previous animation to finish.
+  private tweenSlide(t: TileView, x: number, y: number) {
+    t.tw?.stop();
+    t.tw = this.tweens.add({
+      targets: t.c, x, y, alpha: 1, duration: SHIFT_ANIM_MS, ease: 'Cubic.Out',
+      onComplete: () => { t.tw = null; },
     });
+  }
 
-    const handlePointerEnd = (pointer: Phaser.Input.Pointer) => {
-      if (!this.isSwiping || pointer.id !== this.activePointerId) return;
-      this.isSwiping = false;
-      this.activePointerId = null;
-
-      if (this.paused || this.animating) return;
-
-      const dx = pointer.x - this.swipeStartX;
-      const dy = pointer.y - this.swipeStartY;
-      const sf = this.scaleFactor;
-      const absX = Math.abs(dx);
-      const absY = Math.abs(dy);
-      const duration = Math.max(1, Date.now() - this.swipeStartTime);
-      const speed = Math.max(absX, absY) / duration; // px per ms
-
-      // Fast flick gesture release (e.g. quick thumb flick: moved >= 12px with speed >= 0.18 px/ms)
-      // OR deliberate stroke on release (>= 18px)
-      const isFlick = speed >= 0.18 && (absX >= 12 * sf || absY >= 12 * sf);
-      const isStroke = absX >= 18 * sf || absY >= 18 * sf;
-
-      if (isFlick || isStroke) {
-        if (absX >= absY) {
-          this.doShift('row', this.swipeRow, dx > 0 ? 'right' : 'left', true);
+  private tweenWrap(t: TileView, x: number, y: number, vx: number, vy: number) {
+    t.tw?.stop();
+    const sx = t.c.x;
+    const sy = t.c.y;
+    const sa = t.c.alpha;
+    const o = { p: 0 };
+    t.tw = this.tweens.add({
+      targets: o, p: 1, duration: SHIFT_ANIM_MS, ease: 'Linear',
+      onUpdate: () => {
+        if (o.p < 0.5) {
+          const k = o.p * 2;
+          t.c.setPosition(sx + vx * k, sy + vy * k).setAlpha(sa * (1 - k));
         } else {
-          this.doShift('col', this.swipeCol, dy > 0 ? 'down' : 'up', true);
+          const k = Phaser.Math.Easing.Cubic.Out((o.p - 0.5) * 2);
+          t.c.setPosition(x - vx * (1 - k), y - vy * (1 - k)).setAlpha(k);
         }
-      }
-    };
-
-    this.input.on('pointerup', handlePointerEnd);
-    this.input.on('pointerupoutside', handlePointerEnd);
-
-    this.input.on('pointercancel', () => {
-      this.isSwiping = false;
-      this.activePointerId = null;
-    });
-
-    this.game.events.on('blur', () => {
-      this.isSwiping = false;
-      this.activePointerId = null;
-    });
-  }
-
-  // ─── Visual Arrow Beacon, Lane Beam & Toast Helpers ────────────────────────
-  private highlightArrow(type: 'row' | 'col', index: number, direction: ShiftDirection) {
-    this.clearArrowHighlight();
-    const btn = this.arrowBtns.find(b => b.type === type && b.index === index && b.direction === direction);
-    if (!btn) return;
-
-    // 1. Glowing pulsing beacon ring around the arrow button
-    const sf = this.scaleFactor;
-    const g = this.add.graphics();
-    g.lineStyle(2.5 * sf, 0x00ffcc, 1);
-    g.strokeRoundedRect(-24 * sf, -24 * sf, 48 * sf, 48 * sf, 8 * sf);
-    btn.container.add(g);
-    this.arrowBeacon = g;
-
-    this.arrowBeaconTween = this.tweens.add({
-      targets: g,
-      scaleX: 1.25,
-      scaleY: 1.25,
-      alpha: 0.2,
-      duration: 650,
-      repeat: -1,
-      yoyo: true,
-      ease: 'Sine.InOut',
-    });
-
-    // 2. Visual Guide Beam connecting the arrow across the whole row/column
-    const tileSize = TILE_SIZE * sf;
-    const tileGap  = TILE_GAP  * sf;
-    const step     = tileSize + tileGap;
-    const gridX    = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY    = GRID_Y * sf;
-    const gridSpan = GRID_TOTAL * sf;
-
-    const lg = this.add.graphics();
-    lg.setDepth(15);
-    lg.fillStyle(0x00ffcc, 0.12);
-    lg.lineStyle(2, 0x00ffcc, 0.5);
-
-    if (type === 'row') {
-      const ry = gridY + index * step - 3 * sf;
-      const rh = tileSize + 6 * sf;
-      lg.fillRoundedRect(gridX - 4 * sf, ry, gridSpan + 8 * sf, rh, 8 * sf);
-      lg.strokeRoundedRect(gridX - 4 * sf, ry, gridSpan + 8 * sf, rh, 8 * sf);
-    } else {
-      const rx = gridX + index * step - 3 * sf;
-      const rw = tileSize + 6 * sf;
-      lg.fillRoundedRect(rx, gridY - 4 * sf, rw, gridSpan + 8 * sf, 8 * sf);
-      lg.strokeRoundedRect(rx, gridY - 4 * sf, rw, gridSpan + 8 * sf, 8 * sf);
-    }
-
-    this.laneHighlight = lg;
-    this.laneHighlightTween = this.tweens.add({
-      targets: lg,
-      alpha: 0.35,
-      duration: 750,
-      repeat: -1,
-      yoyo: true,
-      ease: 'Sine.InOut',
-    });
-  }
-
-  private clearArrowHighlight() {
-    if (this.arrowBeaconTween) {
-      this.arrowBeaconTween.stop();
-      this.arrowBeaconTween = null;
-    }
-    if (this.arrowBeacon) {
-      this.arrowBeacon.destroy();
-      this.arrowBeacon = null;
-    }
-    if (this.laneHighlightTween) {
-      this.laneHighlightTween.stop();
-      this.laneHighlightTween = null;
-    }
-    if (this.laneHighlight) {
-      this.laneHighlight.destroy();
-      this.laneHighlight = null;
-    }
-  }
-
-  showToast(message: string, duration = 2400) {
-    if (this.toastContainer) {
-      this.toastContainer.destroy();
-      this.toastContainer = null;
-    }
-    const sf = this.scaleFactor;
-    const cx = this.scale.width / 2;
-    const y = 208 * sf;
-
-    const bg = this.add.rectangle(0, 0, 320 * sf, 32 * sf, COLORS.panelBg, 0.96)
-      .setStrokeStyle(1.5 * sf, COLORS.accent);
-    const txt = this.createText(0, 0, message, {
-      fontSize: `${Math.round(12 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.accent.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5);
-
-    const cont = this.add.container(cx, y, [bg, txt]);
-    cont.setAlpha(0).setScale(0.9);
-    cont.setDepth(200);
-    this.toastContainer = cont;
-
-    this.tweens.add({
-      targets: cont,
-      alpha: 1,
-      scaleX: 1,
-      scaleY: 1,
-      duration: 160,
-      ease: 'Back.Out',
-      onComplete: () => {
-        this.time.delayedCall(duration, () => {
-          if (this.toastContainer === cont) {
-            this.tweens.add({
-              targets: cont,
-              alpha: 0,
-              scaleY: 0.8,
-              duration: 200,
-              onComplete: () => {
-                cont.destroy();
-                if (this.toastContainer === cont) this.toastContainer = null;
-              },
-            });
-          }
-        });
       },
+      onComplete: () => { t.c.setPosition(x, y).setAlpha(1); t.tw = null; },
     });
   }
 
-  private doHint() {
-    if (this.animating || this.paused) return;
-    sounds.playClick();
-    const hintMove = findHintMove(this.board, this.moveHistory.slice(-6), this.boardHistory.slice(-8));
-    if (!hintMove) {
-      this.showToast('🎉 Already Solved!');
-      return;
+  /** Applies "in place" styling; pulses tiles that just locked in. */
+  private refreshStates(animate: boolean, newly: number[]) {
+    const p = this.puzzle;
+    const u = this.vp.u;
+    let fresh = 0;
+    for (let pos = 0; pos < this.board.length; pos++) {
+      const t = this.tiles[this.board[pos]];
+      if (!t) continue;
+      const ok = isCorrectAt(this.board, p, pos);
+      if (ok !== t.correct || !animate) {
+        t.correct = ok;
+        if (ok) t.bg.setFillStyle(this.tileColor(t.id), 1).setStrokeStyle(3 * u, COLORS.white, 0.95);
+        else t.bg.setFillStyle(this.tileColor(t.id), 0.74).setStrokeStyle();
+      }
+      if (animate && ok && newly.includes(t.id)) {
+        fresh++;
+        this.tweens.add({ targets: t.c, scale: 1.1, duration: 90, yoyo: true, ease: 'Sine.Out' });
+      }
     }
-    this.highlightArrow(hintMove.type, hintMove.index, hintMove.direction);
-    const targetName = hintMove.type === 'row' ? `Row ${hintMove.index + 1}` : `Col ${hintMove.index + 1}`;
-    const dir = hintMove.direction.toUpperCase();
-    this.showToast(`💡 Hint: Shift ${targetName} ${dir}!`);
+    this.setProgress(animate);
+    if (!animate || fresh === 0 || this.phase !== 'play') return;
+    if (fresh >= 2) {
+      const words = ['', '', 'Double!', 'Triple!', 'Super!'];
+      this.floatText(words[Math.min(fresh, 4)] || 'Amazing!', COLORS.warning);
+      sounds.playCombo(fresh);
+      triggerHaptic([10, 30, 10]);
+    } else {
+      sounds.playTileSolved();
+    }
+  }
+
+  private blockedFeedback(move: MoveRecord) {
+    sounds.playBlocked();
     triggerHaptic(20);
+    const idx = lineIndices(this.puzzle.size, move.type, move.index);
+    const off = 5 * this.vp.u * (move.direction === 'left' || move.direction === 'up' ? -1 : 1);
+    for (const pos of idx) {
+      const t = this.tiles[this.board[pos]];
+      if (t.tw) continue;
+      const home = this.posXY(pos);
+      this.tweens.add({
+        targets: t.c,
+        x: move.type === 'row' ? home.x + off : home.x,
+        y: move.type === 'col' ? home.y + off : home.y,
+        duration: 50, yoyo: true, repeat: 1,
+        onComplete: () => t.c.setPosition(home.x, home.y),
+      });
+    }
+    if (isLocked(this.puzzle.rules, move.type, move.index)) this.toast('That line is locked');
+    else this.toast('This line only slides one way');
   }
 
-  // ─── Onboarding Tutorial (Levels 1 & 2 Only) ────────────────────────────────
-  private createTutorialHint() {
-    if (this.level > 2 || this.isDailyMode) {
-      this.dismissTutorialImmediate();
-      return;
-    }
-    this.dismissTutorialImmediate();
-
-    const sf = this.scaleFactor;
-    const cx = this.scale.width / 2;
-    const items: Phaser.GameObjects.GameObject[] = [];
-
-    // Compact Top Tutorial Card (positioned between HUD stats and top arrows)
-    const bannerY = 160 * sf;
-    const bannerW = Math.min(380 * sf, this.scale.width - 28);
-    const bannerH = 44 * sf;
-
-    const bannerBg = this.add.rectangle(cx, bannerY, bannerW, bannerH, COLORS.panelBg, 0.96)
-      .setStrokeStyle(1.8, COLORS.accent);
-
-    let titleStr = '';
-    let actionStr = '';
-
-    if (this.level === 1) {
-      titleStr  = 'TUTORIAL: HOW ARROW BUTTONS WORK';
-      actionStr = '👉 Tap Flashing Arrow [←]  OR  Swipe Row 1 Left 👈';
-    } else if (this.level === 2) {
-      this.tutorialStep = 1;
-      titleStr  = 'TUTORIAL: COLUMN SHIFTS (Step 1 of 2)';
-      actionStr = '👉 Tap Top Arrow [↑]  OR  Swipe Col 1 Up 👆';
-    }
-
-    this.tutorialTitleText = this.createText(cx, bannerY - 11 * sf, titleStr, {
-      fontSize: `${Math.round(11 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#f5a623',
-    }).setOrigin(0.5);
-
-    this.tutorialActionText = this.createText(cx, bannerY + 8 * sf, actionStr, {
-      fontSize: `${Math.round(12 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#ffffff',
-    }).setOrigin(0.5);
-
-    items.push(bannerBg, this.tutorialTitleText, this.tutorialActionText);
-
-    // Skip Tutorial Button (Only visible on Levels 1 & 2)
-    const skipY = 744 * sf;
-    const skipBtn = this.createText(cx, skipY, '⏭ Skip Tutorial (Start Level 3)', {
-      fontSize: `${Math.round(12 * sf)}px`,
-      fontStyle: 'bold',
-      color: '#' + COLORS.textMuted.toString(16).padStart(6, '0'),
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
-
-    skipBtn.on('pointerdown', () => {
-      sounds.playClick();
-      this.dismissTutorialImmediate();
-      this.goToLevel(3);
-    });
-
-    items.push(skipBtn);
-    this.tutorialContainer = this.add.container(0, 0, items);
-    this.tutorialContainer.setDepth(20);
-
-    // Position initial pointer and beam for the level's first move
-    if (this.level === 1) {
-      this.highlightArrow('row', 0, 'left');
-      this.syncTutorialPointer('row', 0, 'left');
-    } else if (this.level === 2) {
-      this.highlightArrow('col', 0, 'up');
-      this.syncTutorialPointer('col', 0, 'up');
-    }
+  // ─── Hints ──────────────────────────────────────────────────────────────────
+  private clearHint() {
+    for (const tw of this.hintTweens) tw.stop();
+    for (const o of this.hintObjs) o.destroy();
+    this.hintTweens = [];
+    this.hintObjs = [];
   }
 
-  private updateTutorialGuidance() {
-    if (this.level > 2 || this.isDailyMode) {
-      this.dismissTutorialImmediate();
+  private showHint(fromButton: boolean) {
+    if (this.phase !== 'play' || this.panel) return;
+    this.clearHint();
+    const p = this.puzzle;
+    const path = solve(keysOf(this.board, p), p.target, p.size, p.rules, p.size === 3 ? 10 : 8);
+    if (!path || !path.length) {
+      if (fromButton) this.toast('Too tangled for a hint. Try Retry.');
       return;
     }
-    if (isSolved(this.board)) {
-      this.dismissTutorialImmediate();
-      return;
-    }
+    const m = path[0];
+    const u = this.vp.u;
+    const c = this.lineCenter(m.type, m.index);
+    const thick = this.ts + 8 * u;
 
-    const hint = findHintMove(this.board, this.moveHistory.slice(-6), this.boardHistory.slice(-8));
-    if (!hint) return;
-
-    const dirSym = hint.direction === 'left' ? '←' : hint.direction === 'right' ? '→' : hint.direction === 'up' ? '↑' : '↓';
-    const targetName = hint.type === 'row' ? `Row ${hint.index + 1}` : `Col ${hint.index + 1}`;
-    const dirUpper = hint.direction.toUpperCase();
-
-    this.highlightArrow(hint.type, hint.index, hint.direction);
-    this.syncTutorialPointer(hint.type, hint.index, hint.direction);
-
-    if (this.level === 1) {
-      if (hint.type === 'row' && hint.index === 0 && hint.direction === 'left') {
-        this.tutorialTitleText?.setText('TUTORIAL: HOW ARROW BUTTONS WORK');
-        this.tutorialActionText?.setText('👉 Tap Flashing Arrow [←]  OR  Swipe Row 1 Left 👈');
-      } else {
-        this.tutorialTitleText?.setText('TUTORIAL: HOW ARROW BUTTONS WORK');
-        this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper}`);
-      }
-    } else if (this.level === 2) {
-      const nextBoard = applyMove(this.board, hint);
-      if (isSolved(nextBoard) || this.tutorialStep === 2) {
-        this.tutorialStep = 2;
-        this.tutorialTitleText?.setText('PERFECT! NOW FINISH (Step 2 of 2)');
-        this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper} 👈`);
-      } else {
-        this.tutorialTitleText?.setText('TUTORIAL: GUIDED SOLVE');
-        this.tutorialActionText?.setText(`👉 Tap Arrow [${dirSym}]  OR  Swipe ${targetName} ${dirUpper}`);
-      }
-    }
-  }
-
-  private syncTutorialPointer(type: 'row' | 'col', index: number, direction: ShiftDirection) {
-    if (!this.tutorialContainer || this.level > 2 || this.isDailyMode) return;
-
-    if (this.tutorialPointerTween) {
-      this.tutorialPointerTween.stop();
-      this.tutorialPointerTween = null;
-    }
-    if (this.tutorialSwipeTween) {
-      this.tutorialSwipeTween.stop();
-      this.tutorialSwipeTween = null;
-    }
-
-    const sf = this.scaleFactor;
-    const gridX = (this.scale.width - GRID_TOTAL * sf) / 2;
-    const gridY = GRID_Y * sf;
-    const tileSize = TILE_SIZE * sf;
-    const tileGap = TILE_GAP * sf;
-    const arrowSize = ARROW_SIZE * sf;
-    const arrowMrg = ARROW_MARGIN * sf;
-    const gridSpan = GRID_TOTAL * sf;
-    const step = tileSize + tileGap;
-
-    if (!this.tutorialPointer) {
-      this.tutorialPointer = this.createText(0, 0, '👉', {
-        fontSize: `${Math.round(22 * sf)}px`,
-      }).setOrigin(0.5);
-      this.tutorialContainer.add(this.tutorialPointer);
-    }
-    if (!this.tutorialSwipeHand) {
-      this.tutorialSwipeHand = this.createText(0, 0, '👈', {
-        fontSize: `${Math.round(20 * sf)}px`,
-      }).setOrigin(0.5).setAlpha(0.75);
-      this.tutorialContainer.add(this.tutorialSwipeHand);
-    }
-
-    this.tutorialPointer.setVisible(true);
-    this.tutorialSwipeHand.setVisible(true);
-
-    if (type === 'row') {
-      const rowY = gridY + index * step + tileSize / 2;
-      if (direction === 'left') {
-        const arrowX = gridX - arrowMrg - arrowSize / 2;
-        this.tutorialPointer.setText('👉');
-        this.tutorialPointer.setPosition(arrowX - 22 * sf, rowY);
-        this.tutorialPointerTween = this.tweens.add({
-          targets: this.tutorialPointer,
-          x: { from: arrowX - 26 * sf, to: arrowX - 16 * sf },
-          duration: 480,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.InOut',
-        });
-
-        this.tutorialSwipeHand.setText('👈');
-        this.tutorialSwipeHand.setPosition(gridX + tileSize * 3, rowY);
-        this.tutorialSwipeTween = this.tweens.add({
-          targets: this.tutorialSwipeHand,
-          x: { from: gridX + tileSize * 3, to: gridX + tileSize * 0.6 },
-          alpha: { from: 0.85, to: 0.1 },
-          duration: 1500,
-          repeat: -1,
-          ease: 'Cubic.InOut',
-        });
-      } else {
-        const arrowX = gridX + gridSpan + arrowMrg + arrowSize / 2;
-        this.tutorialPointer.setText('👈');
-        this.tutorialPointer.setPosition(arrowX + 22 * sf, rowY);
-        this.tutorialPointerTween = this.tweens.add({
-          targets: this.tutorialPointer,
-          x: { from: arrowX + 26 * sf, to: arrowX + 16 * sf },
-          duration: 480,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.InOut',
-        });
-
-        this.tutorialSwipeHand.setText('👉');
-        this.tutorialSwipeHand.setPosition(gridX + tileSize * 0.6, rowY);
-        this.tutorialSwipeTween = this.tweens.add({
-          targets: this.tutorialSwipeHand,
-          x: { from: gridX + tileSize * 0.6, to: gridX + tileSize * 3 },
-          alpha: { from: 0.85, to: 0.1 },
-          duration: 1500,
-          repeat: -1,
-          ease: 'Cubic.InOut',
-        });
-      }
+    const lane = this.add.graphics().setDepth(4);
+    lane.lineStyle(3 * u, COLORS.accentHover, 1);
+    lane.fillStyle(COLORS.accentHover, 0.12);
+    if (m.type === 'row') {
+      lane.fillRoundedRect(this.bx0 - 6 * u, c - thick / 2, this.span + 12 * u, thick, 12 * u);
+      lane.strokeRoundedRect(this.bx0 - 6 * u, c - thick / 2, this.span + 12 * u, thick, 12 * u);
     } else {
-      const colX = gridX + index * step + tileSize / 2;
-      if (direction === 'up') {
-        const arrowY = gridY - arrowMrg - arrowSize / 2;
-        this.tutorialPointer.setText('👇');
-        this.tutorialPointer.setPosition(colX, arrowY - 18 * sf);
-        this.tutorialPointerTween = this.tweens.add({
-          targets: this.tutorialPointer,
-          y: { from: arrowY - 22 * sf, to: arrowY - 14 * sf },
-          duration: 480,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.InOut',
-        });
-
-        this.tutorialSwipeHand.setText('👆');
-        this.tutorialSwipeHand.setPosition(colX, gridY + tileSize * 3);
-        this.tutorialSwipeTween = this.tweens.add({
-          targets: this.tutorialSwipeHand,
-          y: { from: gridY + tileSize * 3, to: gridY + tileSize * 0.6 },
-          alpha: { from: 0.85, to: 0.1 },
-          duration: 1500,
-          repeat: -1,
-          ease: 'Cubic.InOut',
-        });
-      } else {
-        const arrowY = gridY + gridSpan + arrowMrg + arrowSize / 2;
-        this.tutorialPointer.setText('👆');
-        this.tutorialPointer.setPosition(colX, arrowY + 20 * sf);
-        this.tutorialPointerTween = this.tweens.add({
-          targets: this.tutorialPointer,
-          y: { from: arrowY + 24 * sf, to: arrowY + 16 * sf },
-          duration: 480,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.InOut',
-        });
-
-        this.tutorialSwipeHand.setText('👇');
-        this.tutorialSwipeHand.setPosition(colX, gridY + tileSize * 0.6);
-        this.tutorialSwipeTween = this.tweens.add({
-          targets: this.tutorialSwipeHand,
-          y: { from: gridY + tileSize * 0.6, to: gridY + tileSize * 3 },
-          alpha: { from: 0.85, to: 0.1 },
-          duration: 1500,
-          repeat: -1,
-          ease: 'Cubic.InOut',
-        });
-      }
+      lane.fillRoundedRect(c - thick / 2, this.by0 - 6 * u, thick, this.span + 12 * u, 12 * u);
+      lane.strokeRoundedRect(c - thick / 2, this.by0 - 6 * u, thick, this.span + 12 * u, 12 * u);
     }
-  }
+    this.hintObjs.push(lane);
+    this.hintTweens.push(this.tweens.add({ targets: lane, alpha: 0.35, duration: 600, yoyo: true, repeat: -1 }));
 
-  private dismissTutorialImmediate() {
-    this.clearArrowHighlight();
-    if (this.tutorialPointerTween) {
-      this.tutorialPointerTween.stop();
-      this.tutorialPointerTween = null;
-    }
-    if (this.tutorialSwipeTween) {
-      this.tutorialSwipeTween.stop();
-      this.tutorialSwipeTween = null;
-    }
-    if (this.tutorialContainer) {
-      this.tutorialContainer.destroy();
-      this.tutorialContainer = null;
-    }
-    this.tutorialTitleText = null;
-    this.tutorialActionText = null;
-    this.tutorialPointer = null;
-    this.tutorialSwipeHand = null;
-  }
-
-  // ─── Stopwatch Timer ────────────────────────────────────────────────────────
-  private startTimer() {
-    if (!this.startTime) {
-      this.startTime = Date.now();
-    }
-    this.updateTimer();
-    this.timerEvent = this.time.addEvent({
-      delay: 250,
-      callback: this.updateTimer,
-      callbackScope: this,
-      loop: true,
-    });
-  }
-
-  private updateTimer() {
-    if (this.paused) return;
-    const elapsed = Math.floor((Date.now() - this.startTime - this.totalPauseMs) / 1000);
-    const m = Math.floor(elapsed / 60);
-    const s = elapsed % 60;
-    this.timerText.setText(`${m}:${String(s).padStart(2, '0')}`);
-    this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
-  }
-
-  private getElapsedSeconds(): number {
-    return Math.floor((Date.now() - this.startTime - this.totalPauseMs) / 1000);
-  }
-
-  // ─── Shift logic ────────────────────────────────────────────────────────────
-  doShift(type: 'row' | 'col', index: number, direction: ShiftDirection, isSwipe = false) {
-    if (this.paused) return;
-    if (this.pauseOverlay.visible || this.howToOverlay.visible) return;
-
-    if (this.animating) {
-      // Buffer up to 2 subsequent moves so rapid consecutive taps feel instant and snappy
-      if (this.moveQueue.length < 2) {
-        this.moveQueue.push({ type, index, direction });
-        if (isSwipe) {
-          sounds.playSlide();
-        } else {
-          sounds.playClick();
-        }
-      }
-      return;
-    }
-
-    if (this.level > 2 || this.isDailyMode) {
-      this.clearArrowHighlight();
-    }
-
-    if (isSwipe) {
-      sounds.playSlide();
-    } else {
-      sounds.playClick();
-    }
-
-    this.executeShift(type, index, direction);
-  }
-
-  private executeShift(type: 'row' | 'col', index: number, direction: ShiftDirection) {
-    const move: MoveRecord = { type, index, direction };
-    const oldBoard = [...this.board];
-    const newBoard = applyMove(this.board, move);
-
-    this.animating = true;
-    this.animateShift(type, index, direction, newBoard, () => {
-      this.board = newBoard;
-      this.boardHistory.push(cloneBoard(newBoard));
-      if (this.boardHistory.length > 15) this.boardHistory.shift();
-      this.moveHistory.push(move);
-      this.moveCount++;
-      this.movesText.setText(String(this.moveCount));
-      this.updateParStars();
-      this.snapTilesToBoard();
-      this.refreshTileColors();
-      this.animating = false;
-      triggerHaptic(15);
-
-      // Pulse and chime ONLY for tile(s) that NEWLY locked into solved position
-      let newlySolved = false;
-      for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-        const val = this.board[i];
-        if (val === i + 1 && oldBoard[i] !== i + 1) {
-          const sprite = this.tileMap.get(val); // Fix #3: O(1) lookup
-          if (sprite) {
-            this.tweens.add({
-              targets: sprite.container,
-              scaleX: 1.08,
-              scaleY: 1.08,
-              duration: 90,
-              yoyo: true,
-              ease: 'Back.Out',
-            });
-            newlySolved = true;
-          }
-        }
-      }
-      if (newlySolved) {
-        sounds.playTileSolved();
-      }
-
-      if (isSolved(this.board)) {
-        this.moveQueue = [];
-        this.dismissTutorialImmediate();
-        this.onVictory();
-      } else {
-        if (this.level <= 2 && !this.isDailyMode) {
-          this.updateTutorialGuidance();
-        } else {
-          this.dismissTutorialImmediate();
-        }
-        if (this.moveQueue.length > 0) {
-          const next = this.moveQueue.shift()!;
-          this.executeShift(next.type, next.index, next.direction);
-        }
-      }
-    });
-  }
-
-  private animateShift(
-    type: 'row' | 'col',
-    index: number,
-    direction: ShiftDirection,
-    newBoard: Board,
-    onComplete: () => void,
-  ) {
-    const sf = this.scaleFactor;
-    const tileSize = Math.round(TILE_SIZE * sf);
-    const tileGap  = Math.round(TILE_GAP  * sf);
-    const step     = tileSize + tileGap;
-    const gridTotal = GRID_SIZE * step - tileGap;
-    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
-    const gridY    = Math.round(GRID_Y * sf);
-
-    const getPosCoords = (boardIdx: number) => {
-      const col = boardIdx % GRID_SIZE;
-      const row = Math.floor(boardIdx / GRID_SIZE);
-      return {
-        x: Math.round(gridX + col * step + tileSize / 2),
-        y: Math.round(gridY + row * step + tileSize / 2),
-      };
+    // Finger dot sliding the way to swipe
+    const fwd = m.direction === 'right' || m.direction === 'down' ? 1 : -1;
+    const along = this.span * 0.32 * fwd;
+    const midA = m.type === 'row' ? this.bx0 + this.span / 2 : this.by0 + this.span / 2;
+    const dot = this.add.circle(0, 0, 13 * u, COLORS.white, 0.9).setStrokeStyle(4 * u, COLORS.accent).setDepth(7);
+    const set = (k: number) => {
+      const a = midA - along + along * 2 * k;
+      if (m.type === 'row') dot.setPosition(a, c); else dot.setPosition(c, a);
     };
+    set(0);
+    const o = { k: 0 };
+    this.hintObjs.push(dot);
+    this.hintTweens.push(this.tweens.add({
+      targets: o, k: 1, duration: 900, repeat: -1, repeatDelay: 250, ease: 'Cubic.InOut',
+      onUpdate: () => { set(o.k); dot.setAlpha(o.k < 0.85 ? 0.9 : (1 - o.k) * 6); },
+      onRepeat: () => dot.setAlpha(0.9),
+    }));
 
-    // Collect board indices for this row or column
-    const indices: number[] = [];
-    for (let i = 0; i < GRID_SIZE; i++) {
-      indices.push(type === 'row' ? index * GRID_SIZE + i : i * GRID_SIZE + index);
+    const arrow = this.arrows.find(a => a.move.type === m.type && a.move.index === m.index && a.move.direction === m.direction);
+    if (arrow) this.hintTweens.push(this.tweens.add({ targets: arrow.c, scale: 1.18, duration: 380, yoyo: true, repeat: -1 }));
+
+    if (this.mode === 'level' && this.level <= 2) this.setInfo(this.moveDescription(m), COLORS.accentHover);
+  }
+
+  // ─── Retry / skip ───────────────────────────────────────────────────────────
+  private retry() {
+    if (this.paused || this.leaving) return;
+    if (this.phase !== 'play' && this.phase !== 'failed') return;
+    this.closePanel();
+    this.resetPuzzleState();
+    this.phase = 'play';
+    this.drag = null;
+    this.clearHint();
+    for (let pos = 0; pos < this.board.length; pos++) {
+      const t = this.tiles[this.board[pos]];
+      const to = this.posXY(pos);
+      t.tw?.stop();
+      t.tw = this.tweens.add({ targets: t.c, x: to.x, y: to.y, alpha: 1, scale: 1, duration: 200, ease: 'Cubic.Out', onComplete: () => { t.tw = null; } });
     }
-
-    // Step offset vector
-    let dx = 0;
-    let dy = 0;
-    if (type === 'row') {
-      dx = direction === 'left' ? -step : step;
-    } else {
-      dy = direction === 'up' ? -step : step;
-    }
-
-    // Fix #3: Precompute O(1) reverse-index map for newBoard
-    // (replaces newBoard.indexOf() — an O(n) scan — called 4× per shift)
-    const newBoardMap = new Map<number, number>();
-    for (let i = 0; i < newBoard.length; i++) newBoardMap.set(newBoard[i], i);
-
-    // Determine which tile wraps around
-    const wrapOldIdx = (direction === 'left' || direction === 'up')
-      ? indices[0]
-      : indices[GRID_SIZE - 1];
-
-    let completed = 0;
-    const total = indices.length;
-
-    const finish = () => {
-      completed++;
-      if (completed >= total) {
-        onComplete();
-      }
-    };
-
-    for (const oldIdx of indices) {
-      const tileValue = this.board[oldIdx];
-      const sprite = this.tileMap.get(tileValue); // Fix #3: O(1) lookup
-      if (!sprite) { finish(); continue; }
-
-      const newIdx = newBoardMap.get(tileValue) ?? oldIdx; // Fix #3: O(1) reverse lookup
-      const startCoord = getPosCoords(oldIdx);
-      const targetCoord = getPosCoords(newIdx);
-
-      // Always reset to exact start coord (clears any drag-preview offset)
-      sprite.container.setPosition(startCoord.x, startCoord.y);
-      sprite.container.alpha = 1;
-
-      if (oldIdx === wrapOldIdx) {
-        // Continuous wrap:
-        // First half: slide toward exit edge while fading out (constant speed)
-        // Second half: slide in from entry edge toward target while fading in (constant speed)
-        // Zero stationary freeze — pure continuous velocity!
-        const exitX = startCoord.x + dx;
-        const exitY = startCoord.y + dy;
-        const entryX = targetCoord.x - dx;
-        const entryY = targetCoord.y - dy;
-        const wrapObj = { t: 0 };
-
-        this.tweens.add({
-          targets: wrapObj,
-          t: 1,
-          duration: SHIFT_ANIM_DURATION,
-          ease: 'Linear',
-          onUpdate: () => {
-            const t = wrapObj.t;
-            if (t <= 0.5) {
-              const p = t * 2;
-              sprite.container.x = startCoord.x + (exitX - startCoord.x) * p;
-              sprite.container.y = startCoord.y + (exitY - startCoord.y) * p;
-              sprite.container.alpha = 1 - p * 0.9;
-            } else {
-              const p = (t - 0.5) * 2;
-              sprite.container.x = entryX + (targetCoord.x - entryX) * p;
-              sprite.container.y = entryY + (targetCoord.y - entryY) * p;
-              sprite.container.alpha = 0.1 + p * 0.9;
-            }
-          },
-          onComplete: () => {
-            sprite.container.setPosition(targetCoord.x, targetCoord.y);
-            sprite.container.alpha = 1;
-            finish();
-          },
-        });
-      } else {
-        // Normal sliding tile with snappy physical deceleration
-        this.tweens.add({
-          targets: sprite.container,
-          x: targetCoord.x,
-          y: targetCoord.y,
-          duration: SHIFT_ANIM_DURATION,
-          ease: 'Cubic.Out',
-          onComplete: finish,
-        });
-      }
-    }
+    this.time.delayedCall(150, () => this.refreshStates(false, []));
+    this.updateHud();
+    crazyGames.gameplayStart();
+    if (this.mode === 'level' && this.level <= 2) this.time.delayedCall(220, () => this.showHint(false));
   }
 
-  private snapTilesToBoard() {
-    const sf = this.scaleFactor;
-    const tileSize = Math.round(TILE_SIZE * sf);
-    const tileGap  = Math.round(TILE_GAP  * sf);
-    const step     = tileSize + tileGap;
-    const gridTotal = GRID_SIZE * step - tileGap;
-    const gridX    = Math.round((this.scale.width - gridTotal) / 2);
-    const gridY    = Math.round(GRID_Y * sf);
-
-    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-      const value = this.board[i];
-      const sprite = this.tileMap.get(value); // Fix #3: O(1) lookup
-      if (sprite) {
-        const row = Math.floor(i / GRID_SIZE);
-        const col = i % GRID_SIZE;
-        const x = Math.round(gridX + col * step + tileSize / 2);
-        const y = Math.round(gridY + row * step + tileSize / 2);
-        sprite.container.setPosition(x, y);
-        sprite.container.alpha = 1; // Always reset alpha (wrap tile fades during anim)
-      }
-    }
+  private skipRushBoard() {
+    if (!this.rush || this.phase !== 'play' || this.paused) return;
+    this.rush.timeLeft = Math.max(1, this.rush.timeLeft - 5000);
+    this.floatText('−5s', COLORS.danger);
+    this.phase = 'transition';
+    this.time.delayedCall(120, () => this.nextRushBoard());
   }
 
-  private refreshTileColors() {
-    const sf = this.scaleFactor;
-    for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
-      const value = this.board[i];
-      const sprite = this.tileMap.get(value); // Fix #3: O(1) lookup
-      if (sprite) {
-        const inPlace = value === i + 1;
-        if (inPlace) {
-          sprite.bg.setFillStyle(0x0e3f44);
-          sprite.bg.setStrokeStyle(2 * sf, 0x00ffcc);
-          sprite.label.setColor('#00ffcc');
-        } else {
-          sprite.bg.setFillStyle(COLORS.tile);
-          sprite.bg.setStrokeStyle(1.5 * sf, COLORS.panelBorder);
-          sprite.label.setColor('#' + COLORS.tileText.toString(16).padStart(6, '0'));
-        }
-      }
-    }
-  }
-
-  // ─── Controls ───────────────────────────────────────────────────────────────
-  private doUndo() {
-    if (this.animating || this.moveHistory.length === 0) return;
-    this.moveQueue = [];
-    const lastMove = this.moveHistory.pop()!;
-    const undoMove = reverseMove(lastMove);
-    const newBoard = applyMove(this.board, undoMove);
-    this.animating = true;
-    this.animateShift(undoMove.type, undoMove.index, undoMove.direction, newBoard, () => {
-      this.board = newBoard;
-      this.boardHistory.push(cloneBoard(newBoard));
-      if (this.boardHistory.length > 15) this.boardHistory.shift();
-      this.moveCount = Math.max(0, this.moveCount - 1);
-      this.movesText.setText(String(this.moveCount));
-      this.updateParStars();
-      this.snapTilesToBoard();
-      this.refreshTileColors();
-      this.animating = false;
-      triggerHaptic(15);
-      if (this.level <= 2 && !this.isDailyMode) {
-        this.updateTutorialGuidance();
-      } else {
-        this.dismissTutorialImmediate();
-      }
-    });
-  }
-
-  private doRestart() {
-    if (this.animating) return;
-    this.moveQueue = [];
-    this.board = cloneBoard(this.scrambledBoard);
-    this.boardHistory = [cloneBoard(this.scrambledBoard)];
-    this.moveCount = 0;
-    this.moveHistory = [];
-    this.startTime = Date.now();
-    this.totalPauseMs = 0;
-    this.movesText.setText('0');
-    this.updateParStars();
-    this.timerText.setStyle({ color: '#' + COLORS.text.toString(16).padStart(6, '0') });
-    this.snapTilesToBoard();
-    this.refreshTileColors();
-    if (this.level <= 2 && !this.isDailyMode) {
-      this.tutorialStep = 1;
-      this.createTutorialHint();
-    } else {
-      this.dismissTutorialImmediate();
-    }
-  }
-
-  private goToLevel(lvl: number) {
-    if (this.animating) return;
-    this.moveQueue = [];
-    try {
-      crazyGames.setItem('oneshift_current_level', String(lvl));
-    } catch (_) {}
-    this.scene.restart({ level: lvl });
-  }
-
-  private doNewGame() {
-    if (this.animating) return;
-    this.moveQueue = [];
-    this.scene.restart({ level: this.level });
-  }
-
-  private onVictory() {
-    sounds.playVictory();
-    triggerHaptic([40, 60, 40]);
-    crazyGames.happytime();
+  // ─── Level results ──────────────────────────────────────────────────────────
+  private onSolved() {
+    this.stars = this.currentStars();
+    progress.recordClear(this.level, this.stars);
     crazyGames.gameplayStop();
-    this.timerEvent?.remove();
-    this.moveQueue = [];
-    const elapsed = this.getElapsedSeconds();
+    // happytime is for real achievements only (SDK rule: not for level completion)
+    const world = worldOf(this.level);
+    if (world.last !== null && this.level === world.last) crazyGames.happytime();
+    sounds.playVictory();
+    triggerHaptic([30, 50, 30]);
+    this.celebrateTiles();
+    this.time.delayedCall(420, () => this.showWinPanel(true));
+  }
 
-    let streak = 1;
-    if (this.isDailyMode) {
-      const today = new Date().toISOString().slice(0, 10);
-      const lastWon = crazyGames.getItem('oneshift_daily_last_date');
-      const currentStreak = parseInt(crazyGames.getItem('oneshift_daily_streak') || '0', 10);
-      if (lastWon !== today) {
-        const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-        streak = (lastWon === yesterday) ? currentStreak + 1 : 1;
-        try {
-          crazyGames.setItem('oneshift_daily_streak', String(streak));
-          crazyGames.setItem('oneshift_daily_last_date', today);
-        } catch (_) {}
-      } else {
-        streak = Math.max(1, currentStreak);
-      }
-    } else {
-      // Persistent best score tracking
-      const currentBest = crazyGames.getItem('oneshift_best_lvl_' + this.level);
-      const parsedBest = currentBest ? parseInt(currentBest, 10) : null;
-      let newBest = parsedBest;
-      if (parsedBest === null || this.moveCount < parsedBest) {
-        newBest = this.moveCount;
-        try {
-          crazyGames.setItem('oneshift_best_lvl_' + this.level, String(this.moveCount));
-        } catch (_) {}
-        if (this.bestText) {
-          this.bestText.setText(String(this.moveCount));
-          this.bestText.setStyle({ color: '#00ffcc' });
-        }
-      }
-      bestMoves[this.level] = newBest ?? this.moveCount;
-    }
-
-    // Flash all tiles with victory pulse
-    for (const sprite of this.tileSprites) {
+  private celebrateTiles() {
+    const n = this.puzzle.size;
+    for (let pos = 0; pos < this.board.length; pos++) {
+      const t = this.tiles[this.board[pos]];
       this.tweens.add({
-        targets: sprite.container,
-        scaleX: 1.18, scaleY: 1.18,
-        duration: 220,
-        yoyo: true,
-        ease: 'Sine.InOut',
+        targets: t.c, scale: 1.12, duration: 140, yoyo: true, ease: 'Sine.Out',
+        delay: ((pos % n) + Math.floor(pos / n)) * 45,
       });
     }
+    this.confetti(26);
+  }
 
-    // Celebratory Confetti Burst (Commercial Game Juice)
-    this.spawnConfetti(50);
+  private onFail() {
+    crazyGames.gameplayStop();
+    sounds.playTimeUp();
+    triggerHaptic([20, 40, 20]);
+    this.showFailPanel();
+  }
 
-    // Short delay then show victory scene
-    this.time.delayedCall(500, () => {
-      const data: VictoryData = {
-        level: this.level,
-        moves: this.moveCount,
-        elapsedSeconds: elapsed,
-        bestMoves: bestMoves[this.level] ?? null,
-        isDaily: this.isDailyMode,
-        streak: this.isDailyMode ? streak : undefined,
-      };
-      this.scene.launch(SCENE.VICTORY, data);
-      this.scene.pause(SCENE.GAME);
+  private goNextLevel() {
+    if (this.leaving) return;
+    const world = worldOf(this.level);
+    const finishedWorld = world.last !== null && this.level === world.last;
+    this.leaving = true;
+    crazyGames.maybeMidgameAd(this.level, () => {
+      this.cameras.main.fadeOut(140, 10, 15, 46);
+      this.cameras.main.once('camerafadeoutcomplete', () => {
+        if (finishedWorld) this.scene.start(SCENE.MAP, { unlockedWorld: world.id + 1 });
+        else this.scene.restart({ mode: 'level', level: this.level + 1 });
+      });
     });
   }
 
-  private spawnConfetti(count = 45) {
-    const { width, height } = this.scale;
-    const sf = this.scaleFactor;
-    const colors = [0x00d4aa, 0x00ffcc, 0xf5a623, 0xff3366, 0x3399ff, 0xffffff];
-
-    for (let i = 0; i < count; i++) {
-      const startX = width / 2 + Phaser.Math.Between(-100 * sf, 100 * sf);
-      const startY = height / 2 + Phaser.Math.Between(-50 * sf, 50 * sf);
-      const color = colors[Phaser.Math.Between(0, colors.length - 1)];
-      const w = Phaser.Math.Between(6, 12) * sf;
-      const h = Phaser.Math.Between(4, 8) * sf;
-
-      const piece = this.add.rectangle(startX, startY, w, h, color)
-        .setAlpha(1)
-        .setDepth(30);
-
-      const targetX = startX + Phaser.Math.Between(-180 * sf, 180 * sf);
-      const targetY = startY - Phaser.Math.Between(100 * sf, 260 * sf);
-      const fallY = height + 30 * sf;
-
-      this.tweens.add({
-        targets: piece,
-        x: targetX,
-        y: targetY,
-        angle: Phaser.Math.Between(-180, 180),
-        duration: Phaser.Math.Between(400, 600),
-        ease: 'Cubic.Out',
-        onComplete: () => {
-          this.tweens.add({
-            targets: piece,
-            y: fallY,
-            x: targetX + Phaser.Math.Between(-40 * sf, 40 * sf),
-            angle: Phaser.Math.Between(-360, 360),
-            alpha: { from: 1, to: 0 },
-            duration: Phaser.Math.Between(1200, 1800),
-            ease: 'Sine.In',
-            onComplete: () => piece.destroy(),
-          });
-        },
-      });
-    }
+  private goMap() {
+    if (this.leaving) return;
+    this.leaving = true;
+    crazyGames.gameplayStop();
+    this.cameras.main.fadeOut(120, 10, 15, 46);
+    this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start(SCENE.MAP));
   }
 
-  private togglePause() {
-    this.paused = !this.paused;
-    this.pauseOverlay.setVisible(this.paused);
-    if (this.paused) {
-      sounds.stopBGM();
-      crazyGames.gameplayStop();
-      this.pausedAt = Date.now();
-      (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('▶ Resume');
-    } else {
-      sounds.startBGM();
-      crazyGames.gameplayStart();
-      this.totalPauseMs += Date.now() - this.pausedAt;
-      (this.pauseBtn.list[1] as Phaser.GameObjects.Text).setText('⏸ Pause');
-    }
+  // ─── Shift Rush ─────────────────────────────────────────────────────────────
+  private onRushSolved() {
+    const r = this.rush!;
+    r.score++;
+    const perfect = this.moves <= this.puzzle.par;
+    const gain = RUSH_BONUS_MS + (perfect ? RUSH_PERFECT_BONUS_MS : 0);
+    r.timeLeft = Math.min(RUSH_MAX_MS, r.timeLeft + gain);
+    sounds.playBonus();
+    triggerHaptic(20);
+    this.floatText(`+${gain / 1000}s${perfect ? '  Perfect!' : ''}`, COLORS.warning);
+    for (const t of this.tiles) this.tweens.add({ targets: t.c, scale: 1.08, duration: 110, yoyo: true });
+    this.updateHud();
+    this.time.delayedCall(340, () => this.nextRushBoard());
   }
 
-  private showHowTo() {
-    this.howToOverlay.setVisible(true);
-    if (!this.paused) {
-      this.paused = true;
-      sounds.stopBGM();
-      this.pausedAt = Date.now();
-    }
+  private advanceRushPuzzle() {
+    const r = this.rush!;
+    r.index++;
+    this.puzzle = buildRush(r.index, r.seed);
+    this.resetPuzzleState();
   }
 
-  private hideHowTo() {
-    this.howToOverlay.setVisible(false);
-    if (this.paused) {
-      this.totalPauseMs += Date.now() - this.pausedAt;
-      this.paused = false;
-      sounds.startBGM();
-    }
+  private nextRushBoard() {
+    if (!this.rush || this.phase === 'rushover') return;
+    this.advanceRushPuzzle();
+    this.buildBoardView(true);
+    this.drawSelection();
+    this.refreshStates(false, []);
+    this.updateHud();
+    this.phase = 'play';
   }
 
-  private onVisibilityChange = () => {
-    if (document.hidden) {
-      sounds.stopBGM();
-      if (!this.paused) {
-        this.togglePause();
+  private onRushOver() {
+    this.phase = 'rushover';
+    this.drag = null;
+    crazyGames.gameplayStop();
+    sounds.playTimeUp();
+    this.showRushOverPanel(true);
+  }
+
+  // ─── Panels ─────────────────────────────────────────────────────────────────
+  private openPanel(h: number, dismissOnBackdrop = false): { c: Phaser.GameObjects.Container; w: number; h: number; cx: number; cy: number } {
+    this.closePanel();
+    const { vp } = this;
+    const u = vp.u;
+    const w = Math.min(380 * u, vp.W * 0.92);
+    const ph = h * u;
+    const cx = vp.W / 2;
+    const cy = vp.landscape ? vp.y(320) : vp.y(405);
+
+    const shade = this.add.rectangle(0, 0, vp.W, vp.H, COLORS.black, 0.55).setOrigin(0).setInteractive();
+    // Only a fresh tap dismisses: the release of the drag that solved the board must not
+    const openedAt = performance.now();
+    if (dismissOnBackdrop) {
+      shade.on('pointerup', (p: Phaser.Input.Pointer) => { if (p.downTime > openedAt) this.panelPrimary?.(); });
+    }
+    const box = this.add.rectangle(cx, cy, w, ph, COLORS.panelBg, 0.97).setRounded(20 * u)
+      .setStrokeStyle(2 * u, COLORS.accent, 0.9).setInteractive();
+    const c = this.add.container(0, 0, [shade, box]).setDepth(50);
+    c.setAlpha(0);
+    this.tweens.add({ targets: c, alpha: 1, duration: 160 });
+    box.setScale(0.9);
+    this.tweens.add({ targets: box, scale: 1, duration: 220, ease: 'Back.Out' });
+    this.panel = c;
+    return { c, w, h: ph, cx, cy };
+  }
+
+  private closePanel() {
+    this.panel?.destroy();
+    this.panel = null;
+    this.panelPrimary = null;
+  }
+
+  private showWinPanel(fresh: boolean) {
+    const u = this.vp.u;
+    const world = worldOf(this.level);
+    const finishedWorld = world.last !== null && this.level === world.last;
+    const { c, cx, cy } = this.openPanel(280, this.stars === 3 && !finishedWorld);
+    const titles = ['Solved!', 'Solved!', 'Great!', 'Perfect!'];
+    c.add(text(this, cx, cy - 102 * u, finishedWorld ? 'World complete!' : titles[this.stars], 30 * u, COLORS.accent, true));
+
+    for (let i = 0; i < 3; i++) {
+      const s = text(this, cx + (i - 1) * 54 * u, cy - 44 * u, i < this.stars ? '★' : '☆', 50 * u, i < this.stars ? COLORS.warning : COLORS.panelBorder, true);
+      c.add(s);
+      if (fresh) {
+        s.setScale(0);
+        this.tweens.add({
+          targets: s, scale: 1, duration: 260, delay: 120 + i * 140, ease: 'Back.Out',
+          onStart: () => { if (i < this.stars) sounds.playStar(i); },
+        });
+      }
+    }
+    const par = this.puzzle.par;
+    c.add(text(this, cx, cy + 8 * u, `${this.moves} move${this.moves === 1 ? '' : 's'} · best possible ${par}`, 15 * u, COLORS.textMuted));
+
+    const next = () => this.goNextLevel();
+    this.panelPrimary = next;
+    const nextLabel = finishedWorld ? `On to World ${world.id + 1}` : 'Next level';
+    if (this.stars === 3 || finishedWorld) {
+      c.add(button(this, cx, cy + 74 * u, 230 * u, 52 * u, nextLabel, next, { primary: true, fontPx: 19 * u }));
+      if (!finishedWorld && fresh) {
+        const auto = text(this, cx, cy + 116 * u, 'Tap anywhere to continue', 12 * u, COLORS.textMuted);
+        c.add(auto);
+        this.time.delayedCall(1600, () => { if (this.panel === c) next(); });
       }
     } else {
-      if (!this.paused && !sounds.isMuted()) {
+      c.add(button(this, cx - 92 * u, cy + 74 * u, 168 * u, 52 * u, 'Retry for ★★★', () => this.retryFromWin(), { fontPx: 15 * u }));
+      c.add(button(this, cx + 92 * u, cy + 74 * u, 168 * u, 52 * u, nextLabel, next, { primary: true, fontPx: 17 * u }));
+    }
+  }
+
+  private retryFromWin() {
+    this.phase = 'play';
+    this.retry();
+  }
+
+  private showFailPanel() {
+    const u = this.vp.u;
+    const { c, cx, cy } = this.openPanel(260);
+    const left = this.board.length - correctCount(this.board, this.puzzle);
+    c.add(text(this, cx, cy - 88 * u, 'Out of moves', 28 * u, COLORS.warning, true));
+    const msg = left <= 3 ? `So close! Only ${left} tile${left === 1 ? '' : 's'} left.` : `${left} tiles still out of place.`;
+    c.add(text(this, cx, cy - 40 * u, msg, 17 * u, COLORS.text, true));
+    c.add(text(this, cx, cy - 10 * u, `This one can be solved in ${this.puzzle.par}.`, 14 * u, COLORS.textMuted));
+
+    const retry = () => this.retry();
+    this.panelPrimary = retry;
+    if (!this.usedBonus) {
+      c.add(button(this, cx - 92 * u, cy + 58 * u, 168 * u, 52 * u, '+3 moves', () => this.addBonusMoves(), { fontPx: 17 * u }));
+      c.add(button(this, cx + 92 * u, cy + 58 * u, 168 * u, 52 * u, 'Retry', retry, { primary: true, fontPx: 18 * u }));
+    } else {
+      c.add(button(this, cx, cy + 58 * u, 230 * u, 52 * u, 'Retry', retry, { primary: true, fontPx: 18 * u }));
+    }
+  }
+
+  private addBonusMoves() {
+    this.usedBonus = true;
+    this.bonus += 3;
+    this.closePanel();
+    this.phase = 'play';
+    this.updateHud();
+    crazyGames.gameplayStart();
+  }
+
+  private showRushOverPanel(fresh: boolean) {
+    const u = this.vp.u;
+    const r = this.rush!;
+    const best = progress.rushBest();
+    const isBest = fresh ? progress.recordRush(r.score) : r.score >= best && r.score > 0;
+    if (fresh && isBest) crazyGames.happytime();
+    const { c, cx, cy } = this.openPanel(280);
+    c.add(text(this, cx, cy - 100 * u, "Time's up!", 30 * u, COLORS.warning, true));
+    c.add(text(this, cx, cy - 46 * u, `${r.score}`, 54 * u, COLORS.text, true));
+    c.add(text(this, cx, cy - 6 * u, `board${r.score === 1 ? '' : 's'} solved`, 15 * u, COLORS.textMuted));
+    c.add(text(this, cx, cy + 22 * u, isBest ? 'New best!' : `Best: ${Math.max(best, r.score)}`, 16 * u, isBest ? COLORS.accent : COLORS.textMuted, true));
+    const again = () => {
+      if (this.leaving) return;
+      this.leaving = true;
+      crazyGames.maybeMidgameAd(progress.maxLevel(), () => this.scene.restart({ mode: 'rush' }));
+    };
+    this.panelPrimary = again;
+    c.add(button(this, cx - 92 * u, cy + 80 * u, 168 * u, 52 * u, 'Map', () => this.goMap(), { fontPx: 17 * u }));
+    c.add(button(this, cx + 92 * u, cy + 80 * u, 168 * u, 52 * u, 'Play again', again, { primary: true, fontPx: 17 * u }));
+  }
+
+  private showIntroPanel() {
+    const world = worldOf(this.level);
+    if (!world.intro) return;
+    this.phase = 'intro';
+    const u = this.vp.u;
+    const { c, cx, cy } = this.openPanel(250);
+    c.add(text(this, cx, cy - 80 * u, `World ${world.id} · ${world.name}`, 14 * u, COLORS.textMuted, true));
+    c.add(text(this, cx, cy - 50 * u, world.intro.title, 26 * u, COLORS.accent, true));
+    c.add(text(this, cx, cy + 4 * u, world.intro.body, 15 * u, COLORS.text).setLineSpacing(6 * u));
+    const go = () => {
+      progress.markIntro(world.id);
+      this.closePanel();
+      this.startPlay();
+    };
+    this.panelPrimary = go;
+    c.add(button(this, cx, cy + 82 * u, 200 * u, 50 * u, 'Got it', go, { primary: true, fontPx: 18 * u }));
+  }
+
+  private showPausePanel() {
+    const u = this.vp.u;
+    const { c, cx, cy } = this.openPanel(170, true);
+    c.add(text(this, cx, cy - 34 * u, 'Paused', 28 * u, COLORS.accent, true));
+    c.add(text(this, cx, cy + 16 * u, 'Tap anywhere to continue', 15 * u, COLORS.textMuted));
+    this.panelPrimary = () => this.resumeFromPause();
+  }
+
+  private resumeFromPause() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.closePanel();
+  }
+
+  private setupVisibility() {
+    const onVis = () => {
+      if (document.hidden) {
+        sounds.stopBGM();
+        this.drag = null;
+        // Rush clock pauses, but no gameplayStop: the SDK handles focus changes itself
+        if (this.mode === 'rush' && this.phase === 'play' && !this.paused) {
+          this.paused = true;
+          this.showPausePanel();
+        }
+      } else if (!sounds.isMuted()) {
         sounds.startBGM();
       }
-    }
-  };
-
-  private setupVisibilityHandling() {
-    document.addEventListener('visibilitychange', this.onVisibilityChange);
-    this.events.once('shutdown', () => {
-      document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    });
+    };
+    document.addEventListener('visibilitychange', onVis);
+    this.events.once('shutdown', () => document.removeEventListener('visibilitychange', onVis));
   }
 
-  private onResize() {
-    this.scene.restart({
-      level: this.level,
-      isDaily: this.isDailyMode,
-      board: this.board,
-      scrambledBoard: this.scrambledBoard,
-      moveHistory: this.moveHistory,
-      moveCount: this.moveCount,
-      startTime: this.startTime,
-      totalPauseMs: this.totalPauseMs,
-      timeLimit: this.timeLimit,
-    });
+  // ─── Effects ────────────────────────────────────────────────────────────────
+  private toast(msg: string) {
+    this.toastObj?.destroy();
+    const u = this.vp.u;
+    const x = this.bx0 + this.span / 2;
+    const y = this.by0 - this.arrowOff - this.arrowSize * 0.9;
+    const t = text(this, 0, 0, msg, 14 * u, COLORS.text, true);
+    const bg = this.add.rectangle(0, 0, t.width + 28 * u, 32 * u, COLORS.panelBg, 0.95).setRounded(16 * u)
+      .setStrokeStyle(1.5 * u, COLORS.panelBorder);
+    const c = this.add.container(x, y, [bg, t]).setDepth(40).setAlpha(0);
+    this.toastObj = c;
+    this.tweens.add({ targets: c, alpha: 1, duration: 120 });
+    this.tweens.add({ targets: c, alpha: 0, duration: 250, delay: 1500, onComplete: () => c.destroy() });
   }
 
-  update() {
-    if (this.keyboardMode && !this.paused) {
-      this.drawSelectionIndicator();
+  private floatText(msg: string, color: number) {
+    const u = this.vp.u;
+    const t = text(this, this.bx0 + this.span / 2, this.by0 + this.span / 2, msg, 34 * u, color, true)
+      .setDepth(45).setStroke(hex(COLORS.bgDeep), 6 * u).setScale(0.5);
+    this.tweens.add({ targets: t, scale: 1, duration: 180, ease: 'Back.Out' });
+    this.tweens.add({ targets: t, y: t.y - 50 * u, alpha: 0, duration: 450, delay: 380, onComplete: () => t.destroy() });
+  }
+
+  private confetti(count: number) {
+    const { W, H, u } = this.vp;
+    const colors = [...ROW_COLORS, COLORS.white];
+    for (let i = 0; i < count; i++) {
+      const x = W / 2 + Phaser.Math.Between(-80, 80) * u;
+      const y = this.by0 + this.span / 2;
+      const piece = this.add.rectangle(x, y, Phaser.Math.Between(6, 11) * u, Phaser.Math.Between(4, 8) * u,
+        colors[i % colors.length]).setDepth(48);
+      const tx = x + Phaser.Math.Between(-200, 200) * u;
+      const ty = y - Phaser.Math.Between(120, 300) * u;
+      this.tweens.add({
+        targets: piece, x: tx, y: ty, angle: Phaser.Math.Between(-180, 180), duration: Phaser.Math.Between(380, 560), ease: 'Cubic.Out',
+        onComplete: () => this.tweens.add({
+          targets: piece, y: H + 20 * u, alpha: 0.2, angle: Phaser.Math.Between(-360, 360),
+          duration: Phaser.Math.Between(900, 1400), ease: 'Sine.In', onComplete: () => piece.destroy(),
+        }),
+      });
     }
   }
 }

@@ -80,10 +80,7 @@ class CrazyGamesBridge {
   loadingStart(): void {
     if (this.hasLoadingStarted) return;
     this.hasLoadingStarted = true;
-
-    try {
-      window.CrazyGames?.SDK?.game?.loadingStart();
-    } catch (_) {}
+    this.whenReady(() => window.CrazyGames?.SDK?.game?.loadingStart());
 
     // If loadingStop was requested while awaiting loadingStart
     if (this.pendingLoadingStop) {
@@ -102,32 +99,39 @@ class CrazyGamesBridge {
     }
 
     this.hasLoadingStopped = true;
-    try {
-      window.CrazyGames?.SDK?.game?.loadingStop();
-    } catch (_) {}
+    this.whenReady(() => window.CrazyGames?.SDK?.game?.loadingStop());
   }
+
+  // Events fired before SDK.init() has resolved are sent once it does, in order
+  private whenReady(fn: () => void): void {
+    if (this.initialized || !this.initPromise) {
+      try { fn(); } catch (_) {}
+      return;
+    }
+    this.initPromise.then(() => { try { fn(); } catch (_) {} });
+  }
+
+  // Only real state changes are sent (repeated calls get throttled by the SDK)
+  private gameplayActive = false;
 
   gameplayStart(): void {
     // Safety requirement: loadingStop must precede gameplayStart
     if (!this.hasLoadingStopped) {
       this.loadingStop();
     }
-
-    try {
-      window.CrazyGames?.SDK?.game?.gameplayStart();
-    } catch (_) {}
+    if (this.gameplayActive) return;
+    this.gameplayActive = true;
+    this.whenReady(() => window.CrazyGames?.SDK?.game?.gameplayStart());
   }
 
   gameplayStop(): void {
-    try {
-      window.CrazyGames?.SDK?.game?.gameplayStop();
-    } catch (_) {}
+    if (!this.gameplayActive) return;
+    this.gameplayActive = false;
+    this.whenReady(() => window.CrazyGames?.SDK?.game?.gameplayStop());
   }
 
   happytime(): void {
-    try {
-      window.CrazyGames?.SDK?.game?.happytime();
-    } catch (_) {}
+    this.whenReady(() => window.CrazyGames?.SDK?.game?.happytime());
   }
 
   // ─── Data Module (Cloud save on CrazyGames, localStorage fallback) ──────────
@@ -160,20 +164,41 @@ class CrazyGamesBridge {
     } catch (_) {}
   }
 
+  // ─── Paced Midgame Ads ──────────────────────────────────────────────────────
+  // No ads during the first levels, and at least 3 minutes between ads.
+  // (Ads are disabled by CrazyGames during Basic Launch anyway.)
+  private lastAdAt = Date.now();
+
+  maybeMidgameAd(level: number, onComplete: () => void): void {
+    const MIN_LEVEL = 6;
+    const MIN_GAP_MS = 180_000;
+    if (level < MIN_LEVEL || Date.now() - this.lastAdAt < MIN_GAP_MS) {
+      onComplete();
+      return;
+    }
+    this.lastAdAt = Date.now();
+    this.requestMidgameAd(onComplete);
+  }
+
   // ─── Midgame Ad Request ─────────────────────────────────────────────────────
   requestMidgameAd(onComplete?: () => void): void {
     let completed = false;
+    let started = false;
     const finish = () => {
       if (!completed) {
         completed = true;
+        if (started) sounds.startBGM();   // unmute only after a real ad
         onComplete?.();
       }
     };
+    // Never leave the player stuck if the SDK never responds (but never cut a running ad)
+    window.setTimeout(() => { if (!started) finish(); }, 5000);
 
     try {
       if (window.CrazyGames?.SDK?.ad?.requestAd) {
         window.CrazyGames.SDK.ad.requestAd('midgame', {
           adStarted: () => {
+            started = true;
             sounds.stopBGM();
           },
           adFinished: () => {

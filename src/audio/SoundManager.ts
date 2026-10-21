@@ -47,9 +47,11 @@ class SoundManager {
 
   private setupAudioUnlock() {
     if (typeof window === 'undefined') return;
+    let primed = false;
     const unlock = () => {
       this.initCtx();
-      if (this.ctx && this.ctx.state === 'running') {
+      if (!primed && this.ctx && this.ctx.state === 'running') {
+        primed = true;
         try {
           const buffer = this.ctx.createBuffer(1, 1, 22050);
           const src = this.ctx.createBufferSource();
@@ -58,11 +60,12 @@ class SoundManager {
           src.start(0);
         } catch (_) {}
       }
-      window.removeEventListener('pointerdown', unlock, true);
-      window.removeEventListener('touchend', unlock, true);
     };
+    // Kept for the whole session: iOS can suspend/interrupt the context after
+    // backgrounding, and it may only be resumed inside a user gesture.
     window.addEventListener('pointerdown', unlock, true);
     window.addEventListener('touchend', unlock, true);
+    window.addEventListener('click', unlock, true);
   }
 
   private setupLifecycleListeners() {
@@ -158,7 +161,8 @@ class SoundManager {
         this.compressor.connect(this.ctx.destination);
       }
     }
-    if (this.ctx && this.ctx.state === 'suspended') {
+    // iOS also reports a non-standard 'interrupted' state
+    if (this.ctx && this.ctx.state !== 'running' && this.ctx.state !== 'closed') {
       this.ctx.resume().catch(() => {});
     }
   }
@@ -389,6 +393,49 @@ class SoundManager {
 
     osc.start(now);
     osc.stop(now + 0.165);
+  }
+
+  // ─── SFX: Short tone helper ─────────────────────────────────────────────────
+  private tone(freq: number, endFreq: number, dur: number, vol: number, type: OscillatorType, delay = 0) {
+    if (this.isMuted()) return;
+    this.initCtx();
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime + delay;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, now + dur);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(vol, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(gain);
+    gain.connect(this.masterGain || this.ctx.destination);
+    osc.start(now);
+    osc.stop(now + dur + 0.01);
+  }
+
+  // ─── SFX: Combo (several tiles locked in by one shift) ──────────────────────
+  playCombo(count: number) {
+    const base = [660, 784, 988, 1175];
+    const n = Math.min(count, 4);
+    for (let i = 0; i < n; i++) this.tone(base[i], base[i] * 1.5, 0.14, 0.12, 'sine', i * 0.05);
+  }
+
+  // ─── SFX: Blocked move (locked / wrong-way line) ────────────────────────────
+  playBlocked() {
+    this.tone(180, 120, 0.09, 0.12, 'triangle');
+  }
+
+  // ─── SFX: Star pop on the win panel ─────────────────────────────────────────
+  playStar(i: number) {
+    const f = [880, 1109, 1319][Math.min(i, 2)];
+    this.tone(f, f * 1.25, 0.18, 0.13, 'sine');
+  }
+
+  // ─── SFX: Rush time bonus ───────────────────────────────────────────────────
+  playBonus() {
+    this.tone(990, 1480, 0.12, 0.1, 'square');
   }
 
   // ─── SFX: Victory Fanfare Chord ─────────────────────────────────────────────

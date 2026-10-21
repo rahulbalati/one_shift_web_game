@@ -1,39 +1,42 @@
 import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
-import { VictoryScene } from './scenes/VictoryScene.ts';
-import { COLORS, BASE_WIDTH, BASE_HEIGHT } from './config.ts';
+import { MapScene } from './scenes/MapScene.ts';
+import { COLORS } from './config.ts';
 import { crazyGames } from './sdk/CrazyGamesSDK.ts';
 
-// ─── Phaser Game config (Native High-DPI Resolution with Scale.FIT) ─────────────
-const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2.5) : 1;
-const GAME_WIDTH = Math.round(BASE_WIDTH * dpr);
-const GAME_HEIGHT = Math.round(BASE_HEIGHT * dpr);
+// ─── Canvas sizing ────────────────────────────────────────────────────────────
+// The canvas always matches the frame's aspect ratio (portrait on phones,
+// landscape on desktop) at native device resolution, so nothing is letterboxed
+// and text stays sharp. Scenes lay themselves out from the live size.
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+function frameSize(): { w: number; h: number } {
+  const el = document.getElementById('game-container');
+  const w = el?.clientWidth || window.innerWidth;
+  const h = el?.clientHeight || window.innerHeight;
+  return { w: Math.max(240, Math.round(w * DPR)), h: Math.max(240, Math.round(h * DPR)) };
+}
+
+const initial = frameSize();
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
-  width: GAME_WIDTH,
-  height: GAME_HEIGHT,
+  width: initial.w,
+  height: initial.h,
   backgroundColor: '#' + COLORS.bgDeep.toString(16).padStart(6, '0'),
   parent: 'game-container',
-  scene: [BootScene, GameScene, VictoryScene],
+  scene: [BootScene, GameScene, MapScene],
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },
-  // roundPixels MUST be false — true causes tiles to snap to integers mid-tween
-  // producing the "shattered / jittery" movement on mobile.
-  roundPixels: false,
   input: {
     activePointers: 2,
-    touch: {
-      capture: true,
-    },
+    touch: { capture: true },
   },
   render: {
     antialias: true,
-    antialiasGL: true,
-    pixelArt: false,
     roundPixels: false,
     powerPreference: 'high-performance',
   },
@@ -43,51 +46,48 @@ const config: Phaser.Types.Core.GameConfig = {
   },
 };
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────────
-let game: Phaser.Game | null = null;
-
 async function bootstrap() {
-  // Prevent context menu and touch bounce/scrolling on mobile
-  if (typeof document !== 'undefined') {
-    document.addEventListener('contextmenu', e => e.preventDefault());
-    document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
-  }
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
 
-  // Ensure Google Fonts are loaded and parsed before any scene renders
-  if (typeof document !== 'undefined' && 'fonts' in document) {
-    try {
-      await document.fonts.ready;
-    } catch (_) {}
-  }
+  // Fonts and the SDK load in parallel, each with a short cap so a slow network
+  // never holds the game back.
+  const cap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+  const fonts = 'fonts' in document ? document.fonts.ready.then(() => undefined).catch(() => undefined) : Promise.resolve();
+  await Promise.all([
+    Promise.race([fonts, cap(700)]),
+    Promise.race([crazyGames.init().catch(() => undefined), cap(1500)]),
+  ]);
 
-  // CrazyGames SDK v3: Initialize first with safety timeout
-  try {
-    const timeout = new Promise<void>(resolve => setTimeout(resolve, 1500));
-    await Promise.race([crazyGames.init(), timeout]);
-  } catch (_) {}
-
-  // Signal SDK that loading has started
   crazyGames.loadingStart();
+  const game = new Phaser.Game(config);
+  if (import.meta.env.DEV) (window as unknown as { __game: Phaser.Game }).__game = game;
 
-  // Create Phaser Game instance (BootScene will call loadingStop once created)
-  game = new Phaser.Game(config);
+  let timer = 0;
+  const resize = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      const { w, h } = frameSize();
+      if (w !== game.scale.width || h !== game.scale.height) game.scale.setGameSize(w, h);
+    }, 120);
+  };
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', resize);
 
-  // Platform Hooks (Telegram, YouTube Playables)
+  // Platform hooks (Telegram, YouTube Playables)
   try {
-    const tg = (window as unknown as { Telegram?: { WebApp?: { ready: () => void; expand: () => void; setHeaderColor: (c: string) => void; setBackgroundColor: (c: string) => void } } }).Telegram?.WebApp;
-    if (tg) {
-      tg.ready?.();
-      tg.expand?.();
-      tg.setHeaderColor?.('#0a0f2e');
-      tg.setBackgroundColor?.('#0a0f2e');
-    }
-
-    const yt = (window as unknown as { YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void } }).YT_PLAYABLES;
-    if (yt?.firstFrameReady) yt.firstFrameReady();
-    if (yt?.gameReady) yt.gameReady();
+    const w = window as unknown as {
+      Telegram?: { WebApp?: { ready?: () => void; expand?: () => void; setHeaderColor?: (c: string) => void; setBackgroundColor?: (c: string) => void } };
+      YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void };
+    };
+    const tg = w.Telegram?.WebApp;
+    tg?.ready?.();
+    tg?.expand?.();
+    tg?.setHeaderColor?.('#0a0f2e');
+    tg?.setBackgroundColor?.('#0a0f2e');
+    w.YT_PLAYABLES?.firstFrameReady?.();
+    w.YT_PLAYABLES?.gameReady?.();
   } catch (_) {}
 }
 
 bootstrap();
-
-export default game;

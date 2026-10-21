@@ -6,7 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="description" content="ONE SHIFT – A minimalist logic puzzle game. Slide entire rows and columns to arrange tiles 1–16 in order. No sliding pieces, only whole-row shifts!" />
+    <meta name="description" content="ONE SHIFT – a wrap-around sliding puzzle. Slide whole rows and columns into place across worlds of locks, conveyors, links and shapes, then race the clock in Shift Rush." />
     <meta name="theme-color" content="#0a0f2e" />
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔢</text></svg>" />
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -30,12 +30,15 @@
         overscroll-behavior: none;
         user-select: none;
         -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
         -webkit-touch-callout: none;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         text-rendering: optimizeLegibility;
         font-family: 'Outfit', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       }
+      #game-container { width: 100%; height: 100%; }
       #game-container, canvas { 
         display: block; 
         margin: 0 auto; 
