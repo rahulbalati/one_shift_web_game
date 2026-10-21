@@ -11,7 +11,7 @@ import {
 } from '../game/Board.ts';
 import { solve } from '../game/Solver.ts';
 import { buildLevel, buildRush, worldOf } from '../game/Levels.ts';
-import { progress } from '../game/Progress.ts';
+import { progress, HINTS_PER_PERFECT, HINTS_PER_WORLD } from '../game/Progress.ts';
 import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
 import { button, drawLock, onViewportResize, starString, text, viewport } from '../ui/ui.ts';
@@ -47,6 +47,8 @@ interface Snapshot {
   moves: number;
   bonus: number;
   usedBonus: boolean;
+  usedHint: boolean;
+  earnedHints: number;
   phase: Phase;
   stars: number;
   paused: boolean;
@@ -80,6 +82,13 @@ export class GameScene extends Phaser.Scene {
   private moves = 0;
   private bonus = 0;
   private usedBonus = false;
+  private usedHint = false;       // a paid hint caps this attempt at 2 stars
+  private earnedHints = 0;
+  private hintBtn: Button | null = null;
+  private hintBadge: Phaser.GameObjects.Container | null = null;
+  private hintBadgeBg: Phaser.GameObjects.Arc | null = null;
+  private hintBadgeText: Phaser.GameObjects.Text | null = null;
+  private shownHints = -1;
   private phase: Phase = 'play';
   private stars = 0;
   private paused = false;
@@ -141,6 +150,11 @@ export class GameScene extends Phaser.Scene {
     this.panelPrimary = null;
     this.toastObj = null;
     this.infoText = null;
+    this.hintBtn = null;
+    this.hintBadge = null;
+    this.hintBadgeBg = null;
+    this.hintBadgeText = null;
+    this.shownHints = -1;
     this.drag = null;
     this.leaving = false;
     this.keyboardUsed = false;
@@ -154,6 +168,8 @@ export class GameScene extends Phaser.Scene {
       this.moves = r.moves;
       this.bonus = r.bonus;
       this.usedBonus = r.usedBonus;
+      this.usedHint = r.usedHint;
+      this.earnedHints = r.earnedHints;
       this.phase = r.phase;
       this.stars = r.stars;
       this.paused = r.paused;
@@ -176,6 +192,8 @@ export class GameScene extends Phaser.Scene {
     this.moves = 0;
     this.bonus = 0;
     this.usedBonus = false;
+    this.usedHint = false;
+    this.earnedHints = 0;
   }
 
   create() {
@@ -240,6 +258,8 @@ export class GameScene extends Phaser.Scene {
       moves: this.moves,
       bonus: this.bonus,
       usedBonus: this.usedBonus,
+      usedHint: this.usedHint,
+      earnedHints: this.earnedHints,
       phase: this.phase === 'intro' ? 'play' : this.phase,
       stars: this.stars,
       paused: this.paused,
@@ -525,7 +545,15 @@ export class GameScene extends Phaser.Scene {
 
     this.undoBtn = button(this, pos(0).x, pos(0).y, w, h, 'Undo', () => this.undoLast(), { fontPx: fs });
     if (this.mode === 'level') {
-      button(this, pos(1).x, pos(1).y, w, h, 'Hint', () => this.showHint(true), { fontPx: fs });
+      this.hintBtn = button(this, pos(1).x, pos(1).y, w, h, 'Hint', () => this.showHint(true), { fontPx: fs });
+      // Count badge pinned to the button's top-right corner (hidden on free tutorial levels)
+      if (!this.freeHints()) {
+        const r = 13 * u;
+        this.hintBadgeBg = this.add.circle(0, 0, r, COLORS.warning).setStrokeStyle(2.5 * u, COLORS.bgDeep);
+        this.hintBadgeText = text(this, 0, 0.5 * u, '', 14 * u, COLORS.bgDeep, true);
+        this.hintBadge = this.add.container(w / 2 - 6 * u, -h / 2 + 4 * u, [this.hintBadgeBg, this.hintBadgeText]);
+        this.hintBtn.add(this.hintBadge);
+      }
     } else {
       button(this, pos(1).x, pos(1).y, w, h, 'Skip −5s', () => this.skipRushBoard(), { fontPx: fs * 0.9 });
     }
@@ -536,7 +564,17 @@ export class GameScene extends Phaser.Scene {
     return this.puzzle.limit > 0 ? this.puzzle.limit + this.bonus - this.moves : Infinity;
   }
 
+  /** Tutorial levels have free, unlimited hints. */
+  private freeHints(): boolean {
+    return this.mode === 'level' && this.level <= 3;
+  }
+
   private currentStars(): number {
+    if (this.usedHint) return Math.min(2, this.rawStars());
+    return this.rawStars();
+  }
+
+  private rawStars(): number {
     const par = this.puzzle.par;
     if (this.moves <= par) return 3;
     if (this.moves <= par + 2) return 2;
@@ -559,9 +597,25 @@ export class GameScene extends Phaser.Scene {
       }
       const st = this.currentStars();
       this.starsText.setText(starString(st));
-      this.subText.setText(`★★★ in ${p.par} move${p.par > 1 ? 's' : ''}`);
+      this.subText.setText(this.usedHint ? 'Hint used: up to ★★' : `★★★ in ${p.par} move${p.par > 1 ? 's' : ''}`);
     }
     this.undoBtn.setAlpha(this.history.length ? 1 : 0.5);
+    this.updateHintBadge();
+  }
+
+  private updateHintBadge() {
+    if (!this.hintBadge || !this.hintBadgeBg || !this.hintBadgeText) return;
+    const n = progress.hints();
+    if (n === this.shownHints) return;
+    const changed = this.shownHints !== -1;
+    this.shownHints = n;
+    this.hintBadgeText.setText(n > 99 ? '99+' : String(n));
+    this.hintBadgeBg.setFillStyle(n > 0 ? COLORS.warning : COLORS.lock);
+    if (changed) {
+      this.tweens.killTweensOf(this.hintBadge);
+      this.hintBadge.setScale(1);
+      this.tweens.add({ targets: this.hintBadge, scale: 1.35, duration: 120, yoyo: true, ease: 'Back.Out' });
+    }
   }
 
   private updateRushTimer() {
@@ -929,12 +983,25 @@ export class GameScene extends Phaser.Scene {
 
   private showHint(fromButton: boolean) {
     if (this.phase !== 'play' || this.panel) return;
+    // Tapping again while a hint is still on screen never costs another token
+    if (fromButton && this.hintObjs.length) return;
     this.clearHint();
     const p = this.puzzle;
     const path = solve(keysOf(this.board, p), p.target, p.size, p.rules, p.size === 3 ? 10 : 8);
     if (!path || !path.length) {
       if (fromButton) this.toast('Too tangled for a hint. Try Retry.');
       return;
+    }
+    if (fromButton && !this.freeHints()) {
+      if (!progress.spendHint()) {
+        this.showNoHintsPanel();
+        return;
+      }
+      if (!this.usedHint) {
+        this.usedHint = true;
+        if (this.puzzle.limit > 0 || this.rawStars() === 3) this.toast('Hint used: this level now gives up to ★★');
+      }
+      this.updateHud();
     }
     const m = path[0];
     const u = this.vp.u;
@@ -1010,7 +1077,17 @@ export class GameScene extends Phaser.Scene {
   // ─── Level results ──────────────────────────────────────────────────────────
   private onSolved() {
     this.stars = this.currentStars();
-    progress.recordClear(this.level, this.stars);
+    const prevStars = progress.stars(this.level);
+    const firstClear = progress.recordClear(this.level, this.stars);
+    // Hints are earned by skill: first ★★★ on a level, and finishing a world
+    this.earnedHints = 0;
+    if (!this.freeHints() && this.stars === 3 && prevStars < 3) this.earnedHints += HINTS_PER_PERFECT;
+    const w = worldOf(this.level);
+    if (firstClear && w.last !== null && this.level === w.last) this.earnedHints += HINTS_PER_WORLD;
+    if (this.earnedHints) {
+      progress.addHints(this.earnedHints);
+      this.updateHintBadge();
+    }
     crazyGames.gameplayStop();
     // happytime is for real achievements only (SDK rule: not for level completion)
     const world = worldOf(this.level);
@@ -1155,7 +1232,12 @@ export class GameScene extends Phaser.Scene {
       }
     }
     const par = this.puzzle.par;
-    c.add(text(this, cx, cy + 8 * u, `${this.moves} move${this.moves === 1 ? '' : 's'} · best possible ${par}`, 15 * u, COLORS.textMuted));
+    c.add(text(this, cx, cy + 4 * u, `${this.moves} move${this.moves === 1 ? '' : 's'} · best possible ${par}`, 15 * u, COLORS.textMuted));
+    if (this.earnedHints) {
+      c.add(text(this, cx, cy + 30 * u, `+${this.earnedHints} hint${this.earnedHints > 1 ? 's' : ''} earned`, 15 * u, COLORS.accent, true));
+    } else if (this.usedHint) {
+      c.add(text(this, cx, cy + 30 * u, 'Hint used: solve without one for ★★★', 13 * u, COLORS.textMuted));
+    }
 
     const next = () => this.goNextLevel();
     this.panelPrimary = next;
@@ -1171,6 +1253,20 @@ export class GameScene extends Phaser.Scene {
       c.add(button(this, cx - 92 * u, cy + 74 * u, 168 * u, 52 * u, 'Retry for ★★★', () => this.retryFromWin(), { fontPx: 15 * u }));
       c.add(button(this, cx + 92 * u, cy + 74 * u, 168 * u, 52 * u, nextLabel, next, { primary: true, fontPx: 17 * u }));
     }
+  }
+
+  private showNoHintsPanel() {
+    const u = this.vp.u;
+    const { c, cx, cy } = this.openPanel(250);
+    c.add(text(this, cx, cy - 82 * u, 'Out of hints', 28 * u, COLORS.warning, true));
+    c.add(text(this, cx, cy - 22 * u,
+      `Get ★★★ on a level to earn ${HINTS_PER_PERFECT} hint.\nFinish a world to earn ${HINTS_PER_WORLD}.`, 16 * u, COLORS.text)
+      .setLineSpacing(6 * u));
+    c.add(text(this, cx, cy + 26 * u, 'Stuck? Undo and Retry are always free.', 13 * u, COLORS.textMuted));
+    const close = () => this.closePanel();
+    this.panelPrimary = close;
+    c.add(button(this, cx - 92 * u, cy + 80 * u, 168 * u, 50 * u, 'Retry level', () => this.retry(), { fontPx: 16 * u }));
+    c.add(button(this, cx + 92 * u, cy + 80 * u, 168 * u, 50 * u, 'Keep trying', close, { primary: true, fontPx: 16 * u }));
   }
 
   private retryFromWin() {

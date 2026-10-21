@@ -5,6 +5,11 @@ const K_MAX = 'os2_max_level';
 const K_STARS = 'os2_stars';
 const K_RUSH = 'os2_rush_best';
 const K_SEEN = 'os2_seen_intros';
+const K_HINTS = 'os2_hint_tokens';
+
+export const START_HINTS = 3;
+export const HINTS_PER_PERFECT = 1;
+export const HINTS_PER_WORLD = 2;
 
 function readJSON<T>(key: string, fallback: T): T {
   try {
@@ -63,6 +68,24 @@ export const progress = {
       return true;
     }
     return false;
+  },
+
+  hints(): number {
+    return Math.max(0, readInt(K_HINTS, START_HINTS));
+  },
+
+  addHints(n: number): number {
+    const v = this.hints() + n;
+    crazyGames.setItem(K_HINTS, String(v));
+    return v;
+  },
+
+  /** Spends one hint token. Returns false when none are left. */
+  spendHint(): boolean {
+    const v = this.hints();
+    if (v <= 0) return false;
+    crazyGames.setItem(K_HINTS, String(v - 1));
+    return true;
   },
 
   seenIntro(world: number): boolean {
