@@ -27,8 +27,9 @@ export function triggerHaptic(pattern: number | number[] = 15) {
 
 // ─── Background music ─────────────────────────────────────────────────────────
 // A light, looping "workshop" groove (I–vi–IV–V in C, 96 BPM): soft chord pad,
-// round bass, plucked arpeggio and quiet off-beat hats. Notes are scheduled a
-// little ahead on the audio clock, so timing stays tight even if the page stutters.
+// round bass and a mellow plucked arpeggio, all through a gentle low-pass. Notes
+// are scheduled a little ahead on the audio clock; if the page stalls, missed notes
+// are dropped rather than played late in a burst.
 const BPM = 96;
 const STEP = 60 / BPM / 4;                    // one 16th note, seconds
 const CHORDS: number[][] = [                  // MIDI notes per bar
@@ -49,7 +50,6 @@ class SoundManager {
   private sdkMuted = false;       // CrazyGames platform mute: overrides both
   private bgmPlaying = false;
   private musicBus: GainNode | null = null;
-  private noise: AudioBuffer | null = null;
   private nextNoteTime = 0;
   private step16 = 0;
   private schedTimer: number | null = null;
@@ -136,13 +136,21 @@ class SoundManager {
         this.masterGain.gain.setValueAtTime(this.sdkMuted ? 0 : 1, this.ctx.currentTime);
         // Keeps the mix under 0 dB during fast tapping
         this.compressor = this.ctx.createDynamicsCompressor();
-        this.compressor.threshold.setValueAtTime(-12, this.ctx.currentTime);
+        this.compressor.threshold.setValueAtTime(-10, this.ctx.currentTime);
         this.compressor.knee.setValueAtTime(30, this.ctx.currentTime);
-        this.compressor.ratio.setValueAtTime(12, this.ctx.currentTime);
-        this.compressor.attack.setValueAtTime(0.003, this.ctx.currentTime);
-        this.compressor.release.setValueAtTime(0.15, this.ctx.currentTime);
+        this.compressor.ratio.setValueAtTime(4, this.ctx.currentTime);
+        this.compressor.attack.setValueAtTime(0.005, this.ctx.currentTime);
+        this.compressor.release.setValueAtTime(0.25, this.ctx.currentTime);
+        // Brick-wall limiter last in the chain: stacked effects can never clip
+        const limiter = this.ctx.createDynamicsCompressor();
+        limiter.threshold.setValueAtTime(-3, this.ctx.currentTime);
+        limiter.knee.setValueAtTime(0, this.ctx.currentTime);
+        limiter.ratio.setValueAtTime(20, this.ctx.currentTime);
+        limiter.attack.setValueAtTime(0.001, this.ctx.currentTime);
+        limiter.release.setValueAtTime(0.1, this.ctx.currentTime);
         this.masterGain.connect(this.compressor);
-        this.compressor.connect(this.ctx.destination);
+        this.compressor.connect(limiter);
+        limiter.connect(this.ctx.destination);
       }
     }
     // iOS also reports a non-standard 'interrupted' state
@@ -200,6 +208,17 @@ class SoundManager {
     return !this.musicOn();
   }
 
+  // The same effect fired several times in one instant (multi-tile drags, fast taps)
+  // stacks into a loud crackle; allow each effect at most once per `ms`.
+  private lastSfx: Record<string, number> = {};
+
+  private allow(name: string, ms: number): boolean {
+    const now = performance.now();
+    if (now - (this.lastSfx[name] ?? -1e9) < ms) return false;
+    this.lastSfx[name] = now;
+    return true;
+  }
+
   // ─── Music sequencer ─────────────────────────────────────────────────────────
   startBGM() {
     if (!this.musicOn() || this.bgmPlaying) return;
@@ -209,13 +228,11 @@ class SoundManager {
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.setValueAtTime(0.0001, this.ctx.currentTime);
     this.musicBus.gain.linearRampToValueAtTime(1, this.ctx.currentTime + 1.5);
-    this.musicBus.connect(this.masterGain);
-    if (!this.noise) {
-      const len = Math.floor(this.ctx.sampleRate * 0.05);
-      this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-      const d = this.noise.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    }
+    const tone = this.ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.frequency.setValueAtTime(3200, this.ctx.currentTime);
+    this.musicBus.connect(tone);
+    tone.connect(this.masterGain);
     this.nextNoteTime = this.ctx.currentTime + 0.1;
     this.step16 = 0;
     this.schedule();
@@ -242,7 +259,14 @@ class SoundManager {
 
   private schedule() {
     if (!this.bgmPlaying || !this.ctx || !this.musicBus) return;
-    const ahead = this.ctx.currentTime + 0.3;
+    const now = this.ctx.currentTime;
+    // After a stall (busy main thread, background tab) skip the missed notes so they
+    // are not all started at once.
+    while (this.nextNoteTime < now + 0.01) {
+      this.nextNoteTime += STEP;
+      this.step16 = (this.step16 + 1) % (16 * CHORDS.length);
+    }
+    const ahead = now + 0.3;
     while (this.nextNoteTime < ahead) {
       this.playStep(this.step16, this.nextNoteTime);
       this.nextNoteTime += STEP;
@@ -283,30 +307,16 @@ class SoundManager {
     // Bass: root on beats 1 and 3, a fifth on the "and" of 4
     if (s === 0 || s === 8) this.voice('sine', midi(chord[0] - 24), t, STEP * 6, 0.07, 0.01);
     if (s === 14) this.voice('sine', midi(chord[2] - 24), t, STEP * 2, 0.05, 0.01);
-    // Plucked arpeggio on 8th notes, an octave up
+    // Mellow plucked arpeggio on 8th notes
     if (s % 2 === 0) {
       const idx = ARP[(s / 2) % ARP.length];
-      if (idx >= 0) this.voice('sine', midi(chord[idx] + 12), t, STEP * 3, 0.035, 0.004);
-    }
-    // Hats on the off-beats
-    if (s % 4 === 2 && this.noise && this.ctx) {
-      const src = this.ctx.createBufferSource();
-      src.buffer = this.noise;
-      const f = this.ctx.createBiquadFilter();
-      f.type = 'highpass';
-      f.frequency.setValueAtTime(7000, t);
-      const g = this.ctx.createGain();
-      g.gain.setValueAtTime(0.018, t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
-      src.connect(f); f.connect(g); g.connect(this.musicBus!);
-      src.start(t);
-      src.stop(t + 0.05);
+      if (idx >= 0) this.voice('sine', midi(chord[idx]), t, STEP * 3, 0.03, 0.015);
     }
   }
 
   // ─── SFX: Button Click ──────────────────────────────────────────────────────
   playClick() {
-    if (this.isMuted()) return;
+    if (this.isMuted() || !this.allow('click', 40)) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -333,7 +343,7 @@ class SoundManager {
 
   // ─── SFX: Tile Shift Whoosh ─────────────────────────────────────────────────
   playSlide() {
-    if (this.isMuted()) return;
+    if (this.isMuted() || !this.allow('slide', 50)) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -346,7 +356,7 @@ class SoundManager {
     osc.frequency.exponentialRampToValueAtTime(130, now + 0.11);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.14, now + 0.015);
+    gain.gain.linearRampToValueAtTime(0.1, now + 0.015);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
 
     const out = this.masterGain || this.ctx.destination;
@@ -359,7 +369,7 @@ class SoundManager {
 
   // ─── SFX: Tile Solved Chime ─────────────────────────────────────────────────
   playTileSolved() {
-    if (this.isMuted()) return;
+    if (this.isMuted() || !this.allow('solved', 60)) return;
     this.initCtx();
     if (!this.ctx) return;
 
@@ -412,6 +422,7 @@ class SoundManager {
 
   // ─── SFX: Blocked move (locked / wrong-way line) ────────────────────────────
   playBlocked() {
+    if (!this.allow('blocked', 80)) return;
     this.tone(180, 120, 0.09, 0.12, 'triangle');
   }
 
@@ -423,7 +434,7 @@ class SoundManager {
 
   // ─── SFX: Rush time bonus ───────────────────────────────────────────────────
   playBonus() {
-    this.tone(990, 1480, 0.12, 0.1, 'square');
+    this.tone(990, 1480, 0.14, 0.09, 'triangle');
   }
 
   // ─── SFX: Victory Fanfare Chord ─────────────────────────────────────────────
