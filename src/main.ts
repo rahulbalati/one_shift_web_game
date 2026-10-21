@@ -71,6 +71,8 @@ async function bootstrap() {
   // Restore the player's own sound choice from the save (Data Module on CrazyGames)
   sounds.setUserMuted(progress.soundMuted());
   sounds.onUserMuteChange = muted => progress.setSoundMuted(muted);
+  sounds.setMusicMuted(progress.musicMuted());
+  sounds.onMusicChange = muted => progress.setMusicMuted(muted);
 
   crazyGames.loadingStart();
   const game = new Phaser.Game(config);

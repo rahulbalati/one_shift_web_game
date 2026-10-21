@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import {
-  COLORS, ROW_COLORS, PATTERN_COLORS, SCENE, SHIFT_ANIM_MS, hex,
+  COLORS, ROW_COLORS, PATTERN_COLORS, SCENE, SHIFT_ANIM_MS, hex, BG_RGB,
   RUSH_START_MS, RUSH_BONUS_MS, RUSH_PERFECT_BONUS_MS, RUSH_MAX_MS,
 } from '../config.ts';
 import type { MoveRecord, Puzzle, ShiftDirection } from '../types.ts';
@@ -14,8 +14,8 @@ import { buildLevel, buildRush, worldOf } from '../game/Levels.ts';
 import { progress, HINTS_PER_PERFECT, HINTS_PER_WORLD } from '../game/Progress.ts';
 import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
-import { button, drawLock, onViewportResize, starString, text, viewport } from '../ui/ui.ts';
-import type { Button, Viewport } from '../ui/ui.ts';
+import { button, chip, darken, drawBackground as drawThemeBackground, drawIcon, drawLock, iconButton, onViewportResize, panelBox, sparkle, starString, text, viewport } from '../ui/ui.ts';
+import type { IconButton, Viewport } from '../ui/ui.ts';
 
 type Mode = 'level' | 'rush';
 type Phase = 'play' | 'won' | 'failed' | 'rushover' | 'transition' | 'intro';
@@ -23,7 +23,8 @@ type Phase = 'play' | 'won' | 'failed' | 'rushover' | 'transition' | 'intro';
 interface TileView {
   id: number;
   c: Phaser.GameObjects.Container;
-  bg: Phaser.GameObjects.Rectangle;
+  bg: Phaser.GameObjects.Rectangle;     // gem face
+  base: Phaser.GameObjects.Rectangle;   // darker gem body underneath
   tw: Phaser.Tweens.Tween | null;
   correct: boolean;
 }
@@ -89,10 +90,7 @@ export class GameScene extends Phaser.Scene {
   private usedBonus = false;
   private usedHint = false;       // a paid hint caps this attempt at 2 stars
   private earnedHints = 0;
-  private hintBtn: Button | null = null;
-  private hintBadge: Phaser.GameObjects.Container | null = null;
-  private hintBadgeBg: Phaser.GameObjects.Arc | null = null;
-  private hintBadgeText: Phaser.GameObjects.Text | null = null;
+  private hintBtn: IconButton | null = null;
   private shownHints = -1;
   private phase: Phase = 'play';
   private stars = 0;
@@ -138,7 +136,7 @@ export class GameScene extends Phaser.Scene {
   private barW = 0;
   private barFrac = { v: 0 };
   private infoText: Phaser.GameObjects.Text | null = null;
-  private undoBtn!: Button;
+  private undoBtn!: IconButton;
 
   private drag: DragState | null = null;
 
@@ -160,9 +158,6 @@ export class GameScene extends Phaser.Scene {
     this.toastObj = null;
     this.infoText = null;
     this.hintBtn = null;
-    this.hintBadge = null;
-    this.hintBadgeBg = null;
-    this.hintBadgeText = null;
     this.shownHints = -1;
     this.drag = null;
     this.leaving = false;
@@ -230,7 +225,7 @@ export class GameScene extends Phaser.Scene {
 
     onViewportResize(this, () => this.scene.restart({ mode: this.mode, level: this.level, restore: this.snapshot() }));
 
-    if (!this.restoring) this.cameras.main.fadeIn(160, 10, 15, 46);
+    if (!this.restoring) this.cameras.main.fadeIn(160, ...BG_RGB);
 
     // Re-open whatever overlay was showing before a resize. If the outcome had not
     // been applied yet (resize inside the short post-move delay), apply it now.
@@ -302,10 +297,7 @@ export class GameScene extends Phaser.Scene {
 
   // ─── Layout & board view ────────────────────────────────────────────────────
   private drawBackground() {
-    const { W, H } = this.vp;
-    const bg = this.add.graphics();
-    bg.fillGradientStyle(COLORS.bgDeep, COLORS.bgDeep, COLORS.bgPanel, COLORS.bgPanel, 1);
-    bg.fillRect(0, 0, W, H);
+    drawThemeBackground(this, this.vp);
   }
 
   private computeBoardGeometry() {
@@ -353,12 +345,16 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawBoardCard() {
-    const pad = 10 * this.vp.u;
+    const u = this.vp.u;
+    const pad = 12 * u;
     const g = this.add.graphics().setDepth(0);
+    // Sunken board well: lighter rim, dark inside, inner top shadow
+    g.fillStyle(COLORS.arrowBg, 1);
+    g.fillRoundedRect(this.bx0 - pad - 4 * u, this.by0 - pad - 4 * u, this.span + pad * 2 + 8 * u, this.span + pad * 2 + 10 * u, 22 * u);
     g.fillStyle(COLORS.bgCard, 1);
-    g.fillRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, this.span + pad * 2, 16 * this.vp.u);
-    g.lineStyle(1.5 * this.vp.u, COLORS.panelBorder, 1);
-    g.strokeRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, this.span + pad * 2, 16 * this.vp.u);
+    g.fillRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, this.span + pad * 2, 18 * u);
+    g.fillStyle(COLORS.black, 0.22);
+    g.fillRoundedRect(this.bx0 - pad, this.by0 - pad, this.span + pad * 2, 7 * u, { tl: 18 * u, tr: 18 * u, bl: 0, br: 0 });
 
     // Empty slots
     g.fillStyle(COLORS.slot, 1);
@@ -376,11 +372,22 @@ export class GameScene extends Phaser.Scene {
       if (type === 'row') g.fillRoundedRect(this.bx0 - pad * 0.7, c - thick / 2, this.span + pad * 1.4, thick, 10 * this.vp.u);
       else g.fillRoundedRect(c - thick / 2, this.by0 - pad * 0.7, thick, this.span + pad * 1.4, 10 * this.vp.u);
     };
-    rules.lockedRows.forEach(i => lane('row', i, COLORS.lock, 0.28));
-    rules.lockedCols.forEach(i => lane('col', i, COLORS.lock, 0.28));
-    Object.keys(rules.oneWayRows).forEach(i => lane('row', +i, COLORS.conveyor, 0.3));
-    Object.keys(rules.oneWayCols).forEach(i => lane('col', +i, COLORS.conveyor, 0.3));
-    rules.links.forEach(l => { lane(l.type, l.a, COLORS.link, 0.3); lane(l.type, l.b, COLORS.link, 0.3); });
+    // Conveyor belt stripes across a lane (visible between and around the gems)
+    const belt = (type: 'row' | 'col', i: number) => {
+      lane(type, i, COLORS.conveyor, 0.22);
+      const c = this.lineCenter(type, i);
+      const thick = this.ts + this.gap * 1.2;
+      g.fillStyle(COLORS.conveyor, 0.45);
+      for (let d = -pad * 0.6; d < this.span + pad * 0.6; d += 14 * u) {
+        if (type === 'row') g.fillRect(this.bx0 + d, c - thick / 2, 6 * u, thick);
+        else g.fillRect(c - thick / 2, this.by0 + d, thick, 6 * u);
+      }
+    };
+    rules.lockedRows.forEach(i => lane('row', i, COLORS.lock, 0.3));
+    rules.lockedCols.forEach(i => lane('col', i, COLORS.lock, 0.3));
+    Object.keys(rules.oneWayRows).forEach(i => belt('row', +i));
+    Object.keys(rules.oneWayCols).forEach(i => belt('col', +i));
+    rules.links.forEach(l => { lane(l.type, l.a, COLORS.link, 0.28); lane(l.type, l.b, COLORS.link, 0.28); });
     this.boardObjs.push(g);
   }
 
@@ -397,17 +404,24 @@ export class GameScene extends Phaser.Scene {
     for (let pos = 0; pos < n; pos++) {
       const id = this.board[pos];
       const { x, y } = this.posXY(pos);
-      const bg = this.add.rectangle(0, 0, this.ts, this.ts, this.tileColor(id)).setRounded(this.ts * 0.16);
-      const parts: Phaser.GameObjects.GameObject[] = [bg];
+      // Gem: darker body, raised face, top shine and a glint
+      const color = this.tileColor(id);
+      const ts = this.ts;
+      const depth = ts * 0.07;
+      const base = this.add.rectangle(0, depth / 2, ts, ts, darken(color, 0.62)).setRounded(ts * 0.18);
+      const bg = this.add.rectangle(0, -depth / 2, ts, ts - depth, color).setRounded(ts * 0.18);
+      const shine = this.add.rectangle(0, -ts * 0.33, ts * 0.62, ts * 0.09, COLORS.white, 0.28).setRounded(ts * 0.045);
+      const glint = this.add.circle(-ts * 0.3, -ts * 0.3, ts * 0.055, COLORS.white, 0.75);
+      const parts: Phaser.GameObjects.GameObject[] = [base, bg, shine, glint];
       if (p.kind === 'numbers') {
-        parts.push(text(this, 0, 0, String(p.keys[id] + 1), this.ts * 0.42, COLORS.bgDeep, true));
+        parts.push(text(this, 0, -depth / 2, String(p.keys[id] + 1), ts * 0.42, COLORS.tileText, true));
       }
       const c = this.add.container(x, y, parts).setDepth(2);
       if (popIn) {
         c.setScale(0.6).setAlpha(0);
         this.tweens.add({ targets: c, scale: 1, alpha: 1, duration: 200, delay: pos * 12, ease: 'Back.Out' });
       }
-      this.tiles[id] = { id, c, bg, tw: null, correct: false };
+      this.tiles[id] = { id, c, bg, base, tw: null, correct: false };
     }
   }
 
@@ -433,7 +447,9 @@ export class GameScene extends Phaser.Scene {
         for (const e of ends) {
           if (ow && ow !== e.dir) {
             // Flow marker on the far end of a conveyor
-            this.drawTriangle(g, e.x, e.y, this.arrowSize * 0.3, ow as ShiftDirection, COLORS.conveyor, 0.45);
+            const m = this.add.graphics({ x: e.x, y: e.y }).setDepth(1);
+            drawIcon(m, `chevron-${ow}` as 'chevron-left', this.arrowSize * 0.75, COLORS.conveyor);
+            this.boardObjs.push(m);
             continue;
           }
           const tint = ow ? COLORS.conveyor : linked ? COLORS.link : COLORS.accent;
@@ -447,17 +463,25 @@ export class GameScene extends Phaser.Scene {
       const a = this.lineCenter(l.type, l.a);
       const b = this.lineCenter(l.type, l.b);
       const off = this.arrowOff + this.arrowSize / 2 + 9 * u;
-      g.lineStyle(3 * u, COLORS.link, 0.9);
+      g.lineStyle(4 * u, COLORS.link, 0.95);
+      const chainAt = (x: number, y: number) => {
+        const ic = this.add.graphics({ x, y }).setDepth(1);
+        ic.fillStyle(COLORS.bgDeep, 1).fillCircle(0, 0, 11 * u);
+        drawIcon(ic, 'link', 22 * u, COLORS.link);
+        this.boardObjs.push(ic);
+      };
       if (l.type === 'row') {
         const x = this.bx0 - off;
         g.lineBetween(x, a, x, b);
         g.fillStyle(COLORS.link, 1).fillCircle(x, a, 4 * u).fillCircle(x, b, 4 * u);
+        chainAt(x, (a + b) / 2);
       } else {
         // Above the board normally; below it when the portrait shape preview sits above
         const below = !this.vp.landscape && this.puzzle.kind === 'pattern';
         const y = below ? this.by0 + this.span + off : this.by0 - off;
         g.lineBetween(a, y, b, y);
         g.fillStyle(COLORS.link, 1).fillCircle(a, y, 4 * u).fillCircle(b, y, 4 * u);
+        chainAt((a + b) / 2, y);
       }
     }
   }
@@ -476,11 +500,12 @@ export class GameScene extends Phaser.Scene {
 
   private makeArrow(move: MoveRecord, x: number, y: number, tint: number) {
     const s = this.arrowSize;
-    const bg = this.add.rectangle(0, 0, s, s, COLORS.arrowBg).setRounded(s * 0.28)
-      .setStrokeStyle(1.5 * this.vp.u, tint, 0.55);
-    const g = this.add.graphics();
-    this.drawTriangle(g, 0, 0, s * 0.22, move.direction, tint, 1);
-    const c = this.add.container(x, y, [bg, g]).setDepth(3);
+    const depth = s * 0.1;
+    const base = this.add.rectangle(0, depth / 2, s, s, COLORS.arrowStroke).setRounded(s * 0.3);
+    const bg = this.add.rectangle(0, -depth / 2, s, s - depth, COLORS.arrowBg).setRounded(s * 0.3);
+    const g = this.add.graphics({ y: -depth / 2 });
+    this.drawTriangle(g, 0, 0, s * 0.24, move.direction, tint, 1);
+    const c = this.add.container(x, y, [base, bg, g]).setDepth(3);
     // Generous touch target: as wide as the line, never overlapping the neighbour's
     const across = Math.min(Math.max(s, 44 * this.vp.u), this.step * 0.98);
     if (move.type === 'row') c.setSize(s * 1.3, across);
@@ -505,6 +530,10 @@ export class GameScene extends Phaser.Scene {
     const total = n * cell + (n - 1) * g2;
     const cx = vp.landscape ? vp.x(160) : vp.x(262);
     const cy = vp.landscape ? vp.y(440) : vp.y(182);
+    const back = vp.landscape
+      ? chip(this, cx, cy - 10 * vp.u, total + 70 * vp.u, total + 56 * vp.u)
+      : chip(this, cx - 22 * vp.u, cy, total + 100 * vp.u, total + 16 * vp.u);
+    this.boardObjs.push(back.base, back.face);
     const g = this.add.graphics().setDepth(1);
     for (let i = 0; i < n * n; i++) {
       g.fillStyle(PATTERN_COLORS[this.puzzle.target[i]], 1);
@@ -512,7 +541,7 @@ export class GameScene extends Phaser.Scene {
     }
     const label = vp.landscape
       ? text(this, cx, cy - total / 2 - 18 * vp.u, `Target: ${this.puzzle.patternName ?? ''}`, 14 * vp.u, COLORS.textMuted, true)
-      : text(this, cx - total / 2 - 12 * vp.u, cy, 'Target', 13 * vp.u, COLORS.textMuted, true).setOrigin(1, 0.5);
+      : text(this, cx - total / 2 - 14 * vp.u, cy, 'Target', 13 * vp.u, COLORS.text, true).setOrigin(1, 0.5);
     this.boardObjs.push(g, label);
   }
 
@@ -525,19 +554,28 @@ export class GameScene extends Phaser.Scene {
     const title = this.mode === 'rush' ? 'Shift Rush' : `Level ${this.level}`;
     const sub = this.mode === 'rush' ? `Best: ${progress.rushBest()} boards` : `World ${world.id} · ${world.name}`;
 
-    text(this, vp.x(L ? 160 : 230), vp.y(L ? 150 : 32), title, (L ? 30 : 22) * u, COLORS.text, true);
-    text(this, vp.x(L ? 160 : 230), vp.y(L ? 184 : 56), sub, (L ? 14 : 12) * u, COLORS.textMuted);
+    // Level name: a chip in the top bar (portrait) or the left panel heading (landscape)
+    if (L) {
+      text(this, vp.x(160), vp.y(150), title, 30 * u, COLORS.text, true);
+      text(this, vp.x(160), vp.y(184), sub, 14 * u, COLORS.textMuted);
+    } else {
+      chip(this, vp.x(230), vp.y(36), 210 * u, 56 * u);
+      text(this, vp.x(230), vp.y(26), title, 19 * u, COLORS.text, true);
+      text(this, vp.x(230), vp.y(46), sub, 11 * u, COLORS.textMuted);
+    }
 
-    this.movesText = text(this, vp.x(L ? 160 : 120), vp.y(L ? 250 : 90), '', (L ? 20 : 17) * u, COLORS.text, true);
-    this.starsText = text(this, vp.x(L ? 160 : 340), vp.y(L ? 288 : 90), '', (L ? 26 : 22) * u, COLORS.warning, true);
-    this.subText = text(this, vp.x(L ? 160 : 340), vp.y(L ? 318 : 112), '', (L ? 13 : 11) * u, COLORS.textMuted);
+    // Moves (or Rush score) on a chip, stars beside it
+    chip(this, vp.x(L ? 160 : 125), vp.y(L ? 250 : 98), (L ? 168 : 178) * u, (L ? 42 : 38) * u);
+    this.movesText = text(this, vp.x(L ? 160 : 125), vp.y(L ? 248 : 96), '', (L ? 19 : 16) * u, COLORS.text, true);
+    this.starsText = text(this, vp.x(L ? 160 : 345), vp.y(L ? 292 : 92), '', (L ? 28 : 23) * u, COLORS.warning, true);
+    this.subText = text(this, vp.x(L ? 160 : 345), vp.y(L ? 320 : 115), '', (L ? 13 : 11) * u, COLORS.textMuted);
 
     // Progress bar (tiles placed) / timer bar in Rush
     this.barW = (L ? 170 : 300) * u;
     const bx = vp.x(L ? 155 : 230);
     const by = vp.y(L ? 354 : 136);
-    this.add.rectangle(bx, by, this.barW, 8 * u, COLORS.slot).setRounded(4 * u);
-    this.barFill = this.add.rectangle(bx - this.barW / 2, by, this.barW, 8 * u,
+    this.add.rectangle(bx, by, this.barW, 10 * u, COLORS.bgCard).setRounded(5 * u);
+    this.barFill = this.add.rectangle(bx - this.barW / 2, by, this.barW, 10 * u,
       this.mode === 'rush' ? COLORS.warning : COLORS.accent).setOrigin(0, 0.5).setRounded(4 * u);
     this.barFrac = { v: 0 };
     this.drawBar();
@@ -560,13 +598,10 @@ export class GameScene extends Phaser.Scene {
       text(this, vp.x(L ? 160 : 230), y + (L ? 10 * u : 0), keys, (L ? 13 : 12) * u, COLORS.textMuted).setLineSpacing(4 * u);
     }
 
-    // Top bar: map + sound
-    button(this, vp.x(L ? 70 : 46), vp.y(L ? 44 : 32), (L ? 96 : 72) * u, (L ? 40 : 34) * u, 'Map', () => this.goMap(), { fontPx: (L ? 16 : 14) * u });
-    const sound = button(this, vp.x(L ? 935 : 418), vp.y(L ? 44 : 32), (L ? 96 : 64) * u, (L ? 40 : 34) * u,
-      sounds.isMuted() ? 'Sound off' : 'Sound', () => {
-        const muted = sounds.toggleMute();
-        sound.label.setText(muted ? 'Sound off' : 'Sound');
-      }, { fontPx: (L ? 14 : 11) * u, silent: true });
+    // Top bar: map and pause (music/sound live in the pause menu)
+    const tb = (L ? 58 : 50) * u;
+    iconButton(this, vp.x(L ? 56 : 38), vp.y(L ? 46 : 36), tb, 'map', () => this.goMap());
+    iconButton(this, vp.x(L ? 944 : 422), vp.y(L ? 46 : 36), tb, 'pause', () => this.openPause());
   }
 
   private ruleLegend(): { label: string; color: number }[] {
@@ -582,26 +617,23 @@ export class GameScene extends Phaser.Scene {
     const { vp } = this;
     const u = vp.u;
     const L = vp.landscape;
-    const w = (L ? 150 : 108) * u;
-    const h = (L ? 50 : 46) * u;
-    const fs = (L ? 18 : 16) * u;
-    const pos = (k: number) => L ? { x: vp.x(845), y: vp.y(240 + k * 70) } : { x: vp.x(108 + k * 122), y: vp.y(700) };
+    const size = (L ? 66 : 60) * u;
+    const fs = (L ? 13 : 12) * u;
+    const pos = (k: number) => L ? { x: vp.x(845), y: vp.y(220 + k * 100) } : { x: vp.x(150 + k * 80), y: vp.y(692) };
+    const caption = (k: number, label: string) =>
+      text(this, pos(k).x, pos(k).y + size / 2 + (L ? 16 : 14) * u, label, fs, COLORS.textMuted, true);
 
-    this.undoBtn = button(this, pos(0).x, pos(0).y, w, h, 'Undo', () => this.undoLast(), { fontPx: fs });
+    this.undoBtn = iconButton(this, pos(0).x, pos(0).y, size, 'undo', () => this.undoLast());
+    caption(0, 'Undo');
     if (this.mode === 'level') {
-      this.hintBtn = button(this, pos(1).x, pos(1).y, w, h, 'Hint', () => this.showHint(true), { fontPx: fs });
-      // Count badge pinned to the button's top-right corner (hidden on free tutorial levels)
-      if (!this.freeHints()) {
-        const r = 13 * u;
-        this.hintBadgeBg = this.add.circle(0, 0, r, COLORS.warning).setStrokeStyle(2.5 * u, COLORS.bgDeep);
-        this.hintBadgeText = text(this, 0, 0.5 * u, '', 14 * u, COLORS.bgDeep, true);
-        this.hintBadge = this.add.container(w / 2 - 6 * u, -h / 2 + 4 * u, [this.hintBadgeBg, this.hintBadgeText]);
-        this.hintBtn.add(this.hintBadge);
-      }
+      this.hintBtn = iconButton(this, pos(1).x, pos(1).y, size, 'bulb', () => this.showHint(true), { gold: true });
+      caption(1, 'Hint');
     } else {
-      button(this, pos(1).x, pos(1).y, w, h, 'Skip −5s', () => this.skipRushBoard(), { fontPx: fs * 0.9 });
+      iconButton(this, pos(1).x, pos(1).y, size, 'skip', () => this.skipRushBoard());
+      caption(1, 'Skip −5s');
     }
-    button(this, pos(2).x, pos(2).y, w, h, 'Retry', () => this.retry(), { fontPx: fs });
+    iconButton(this, pos(2).x, pos(2).y, size, 'retry', () => this.retry());
+    caption(2, 'Retry');
   }
 
   private movesLeft(): number {
@@ -648,17 +680,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateHintBadge() {
-    if (!this.hintBadge || !this.hintBadgeBg || !this.hintBadgeText) return;
+    // Tutorial levels have free hints: no count shown
+    if (!this.hintBtn || this.freeHints()) return;
     const n = progress.hints();
     if (n === this.shownHints) return;
     const changed = this.shownHints !== -1;
     this.shownHints = n;
-    this.hintBadgeText.setText(n > 99 ? '99+' : String(n));
-    this.hintBadgeBg.setFillStyle(n > 0 ? COLORS.warning : COLORS.lock);
-    if (changed) {
-      this.tweens.killTweensOf(this.hintBadge);
-      this.hintBadge.setScale(1);
-      this.tweens.add({ targets: this.hintBadge, scale: 1.35, duration: 120, yoyo: true, ease: 'Back.Out' });
+    this.hintBtn.setBadge(n > 99 ? '99+' : String(n), n > 0 ? COLORS.danger : COLORS.lock);
+    if (changed && this.hintBtn.badge) {
+      this.tweens.add({ targets: this.hintBtn.badge, scale: 1.4, duration: 120, yoyo: true, ease: 'Back.Out' });
     }
   }
 
@@ -725,7 +755,6 @@ export class GameScene extends Phaser.Scene {
   private setupInput() {
     this.input.on('pointerdown', (p: Phaser.Input.Pointer, over: Phaser.GameObjects.GameObject[]) => {
       sounds.resume();
-      if (this.paused && this.phase === 'play') { this.resumeFromPause(); return; }
       if (over.length || this.phase !== 'play' || this.drag) return;
       const m = this.gap * 1.5;
       const rx = p.x - this.bx0;
@@ -819,6 +848,7 @@ export class GameScene extends Phaser.Scene {
       sounds.resume();
       if (this.panel) {
         if ((e.code === 'Enter' || e.code === 'Space') && this.panelPrimary) this.panelPrimary();
+        else if (e.code === 'KeyP' && this.paused) this.resumeFromPause();
         return;
       }
       if (this.paused) { this.resumeFromPause(); return; }
@@ -837,6 +867,7 @@ export class GameScene extends Phaser.Scene {
         case 'KeyZ': case 'Backspace': this.undoLast(); break;
         case 'KeyR': this.retry(); break;
         case 'KeyH': if (this.mode === 'level') this.showHint(true); break;
+        case 'KeyP': this.openPause(); break;
       }
     });
   }
@@ -980,12 +1011,18 @@ export class GameScene extends Phaser.Scene {
       const ok = isCorrectAt(this.board, p, pos);
       if (ok !== t.correct || !animate) {
         t.correct = ok;
-        if (ok) t.bg.setFillStyle(this.tileColor(t.id), 1).setStrokeStyle(3 * u, COLORS.white, 0.95);
-        else t.bg.setFillStyle(this.tileColor(t.id), 0.74).setStrokeStyle();
+        if (ok) {
+          t.bg.setFillStyle(this.tileColor(t.id), 1).setStrokeStyle(3 * u, COLORS.white, 0.95);
+          t.base.setAlpha(1);
+        } else {
+          t.bg.setFillStyle(this.tileColor(t.id), 0.78).setStrokeStyle();
+          t.base.setAlpha(0.78);
+        }
       }
       if (animate && ok && newly.includes(t.id)) {
         fresh++;
         this.tweens.add({ targets: t.c, scale: 1.1, duration: 90, yoyo: true, ease: 'Sine.Out' });
+        sparkle(this, t.c.x, t.c.y, u, 6, [COLORS.white, this.tileColor(t.id)]);
       }
     }
     this.setProgress(animate);
@@ -1184,7 +1221,7 @@ export class GameScene extends Phaser.Scene {
     const finishedWorld = this.worldDone;   // only the first completion goes to the map
     this.leaving = true;
     crazyGames.maybeMidgameAd(this.level, () => {
-      this.cameras.main.fadeOut(140, 10, 15, 46);
+      this.cameras.main.fadeOut(140, ...BG_RGB);
       this.cameras.main.once('camerafadeoutcomplete', () => {
         if (finishedWorld) this.scene.start(SCENE.MAP, { unlockedWorld: world.id + 1 });
         else this.scene.restart({ mode: 'level', level: this.level + 1 });
@@ -1197,7 +1234,7 @@ export class GameScene extends Phaser.Scene {
     this.leaving = true;
     crazyGames.gameplayStop();
     crazyGames.setLevelContext(null);
-    this.cameras.main.fadeOut(120, 10, 15, 46);
+    this.cameras.main.fadeOut(120, ...BG_RGB);
     this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start(SCENE.MAP));
   }
 
@@ -1262,19 +1299,17 @@ export class GameScene extends Phaser.Scene {
     const cx = vp.W / 2;
     const cy = vp.landscape ? vp.y(320) : vp.y(405);
 
-    const shade = this.add.rectangle(0, 0, vp.W, vp.H, COLORS.black, 0.55).setOrigin(0).setInteractive();
+    const shade = this.add.rectangle(0, 0, vp.W, vp.H, 0x0b0620, 0.62).setOrigin(0).setInteractive();
     // Only a fresh tap dismisses: the release of the drag that solved the board must not
     const openedAt = performance.now();
     if (dismissOnBackdrop) {
       shade.on('pointerup', (p: Phaser.Input.Pointer) => { if (p.downTime > openedAt) this.panelPrimary?.(); });
     }
-    const box = this.add.rectangle(cx, cy, w, ph, COLORS.panelBg, 0.97).setRounded(20 * u)
-      .setStrokeStyle(2 * u, COLORS.accent, 0.9).setInteractive();
-    const c = this.add.container(0, 0, [shade, box]).setDepth(50);
+    const { base, face, shine } = panelBox(this, cx, cy, w, ph, u);
+    face.setInteractive();
+    const c = this.add.container(0, 0, [shade, base, face, shine]).setDepth(50);
     c.setAlpha(0);
     this.tweens.add({ targets: c, alpha: 1, duration: 160 });
-    box.setScale(0.9);
-    this.tweens.add({ targets: box, scale: 1, duration: 220, ease: 'Back.Out' });
     this.panel = c;
     return { c, w, h: ph, cx, cy };
   }
@@ -1289,42 +1324,59 @@ export class GameScene extends Phaser.Scene {
     const u = this.vp.u;
     const world = worldOf(this.level);
     const finishedWorld = this.worldDone;
-    const { c, cx, cy } = this.openPanel(280, this.stars === 3 && !finishedWorld);
+    const showBar = !finishedWorld && world.last !== null;
+    const { c, cx, cy } = this.openPanel(showBar ? 320 : 290, this.stars === 3 && !finishedWorld);
+    const top = showBar ? cy - 20 * u : cy;
     const titles = ['Solved!', 'Solved!', 'Great!', 'Perfect!'];
-    c.add(text(this, cx, cy - 102 * u, finishedWorld ? 'World complete!' : titles[this.stars], 30 * u, COLORS.accent, true));
+    c.add(text(this, cx, top - 102 * u, finishedWorld ? 'World complete!' : titles[this.stars], 30 * u, this.stars === 3 ? 0xffe28a : COLORS.accent, true));
 
     for (let i = 0; i < 3; i++) {
-      const s = text(this, cx + (i - 1) * 54 * u, cy - 44 * u, i < this.stars ? '★' : '☆', 50 * u, i < this.stars ? COLORS.warning : COLORS.panelBorder, true);
+      const sx = cx + (i - 1) * 58 * u;
+      const s = text(this, sx, top - 46 * u, i < this.stars ? '★' : '☆', 54 * u, i < this.stars ? COLORS.warning : COLORS.arrowBg, true);
       c.add(s);
       if (fresh) {
         s.setScale(0);
         this.tweens.add({
           targets: s, scale: 1, duration: 260, delay: 120 + i * 140, ease: 'Back.Out',
-          onStart: () => { if (i < this.stars) sounds.playStar(i); },
+          onStart: () => { if (i < this.stars) { sounds.playStar(i); sparkle(this, sx, top - 46 * u, u, 7); } },
         });
       }
     }
     const par = this.puzzle.par;
-    c.add(text(this, cx, cy + 4 * u, `${this.moves} move${this.moves === 1 ? '' : 's'} · best possible ${par}`, 15 * u, COLORS.textMuted));
+    c.add(text(this, cx, top + 4 * u, `${this.moves} move${this.moves === 1 ? '' : 's'} · best possible ${par}`, 15 * u, COLORS.textMuted));
     if (this.earnedHints) {
-      c.add(text(this, cx, cy + 30 * u, `+${this.earnedHints} hint${this.earnedHints > 1 ? 's' : ''} earned`, 15 * u, COLORS.accent, true));
+      c.add(text(this, cx, top + 30 * u, `+${this.earnedHints} hint${this.earnedHints > 1 ? 's' : ''} earned`, 15 * u, COLORS.accent, true));
     } else if (this.usedHint) {
-      c.add(text(this, cx, cy + 30 * u, 'Hint used: solve without one for ★★★', 13 * u, COLORS.textMuted));
+      c.add(text(this, cx, top + 30 * u, 'Hint used: solve without one for ★★★', 13 * u, COLORS.textMuted));
     }
+    if (showBar) {
+      // Progress toward unlocking the next world
+      const all = progress.allStars();
+      let cleared = 0;
+      for (let l = world.first; l <= world.last!; l++) if (all[l]) cleared++;
+      const bw = 250 * u;
+      const by = top + 62 * u;
+      c.add(text(this, cx - bw / 2, by - 14 * u, `World ${world.id + 1} unlock`, 12 * u, COLORS.textMuted, true).setOrigin(0, 0.5));
+      c.add(text(this, cx + bw / 2, by - 14 * u, `${cleared}/${world.last! - world.first + 1}`, 12 * u, COLORS.textMuted, true).setOrigin(1, 0.5));
+      c.add(this.add.rectangle(cx, by, bw, 10 * u, COLORS.bgCard).setRounded(5 * u));
+      const frac = cleared / (world.last! - world.first + 1);
+      if (frac > 0) c.add(this.add.rectangle(cx - bw / 2, by, Math.max(10 * u, bw * frac), 10 * u, COLORS.accent).setOrigin(0, 0.5).setRounded(5 * u));
+    }
+    const btnY = showBar ? top + 112 * u : top + 74 * u;
 
     const next = () => this.goNextLevel();
     this.panelPrimary = next;
     const nextLabel = finishedWorld ? `On to World ${world.id + 1}` : 'Next level';
     if (this.stars === 3 || finishedWorld) {
-      c.add(button(this, cx, cy + 74 * u, 230 * u, 52 * u, nextLabel, next, { primary: true, fontPx: 19 * u }));
+      c.add(button(this, cx, btnY, 230 * u, 54 * u, nextLabel, next, { primary: true, fontPx: 19 * u }));
       if (!finishedWorld && fresh) {
-        const auto = text(this, cx, cy + 116 * u, 'Tap anywhere to continue', 12 * u, COLORS.textMuted);
+        const auto = text(this, cx, btnY + 42 * u, 'Tap anywhere to continue', 12 * u, COLORS.textMuted);
         c.add(auto);
         this.time.delayedCall(1600, () => { if (this.panel === c) next(); });
       }
     } else {
-      c.add(button(this, cx - 92 * u, cy + 74 * u, 168 * u, 52 * u, 'Retry for ★★★', () => this.retryFromWin(), { fontPx: 15 * u }));
-      c.add(button(this, cx + 92 * u, cy + 74 * u, 168 * u, 52 * u, nextLabel, next, { primary: true, fontPx: 17 * u }));
+      c.add(button(this, cx - 92 * u, btnY, 168 * u, 54 * u, 'Retry for ★★★', () => this.retryFromWin(), { fontPx: 15 * u }));
+      c.add(button(this, cx + 92 * u, btnY, 168 * u, 54 * u, nextLabel, next, { primary: true, fontPx: 17 * u }));
     }
   }
 
@@ -1416,18 +1468,76 @@ export class GameScene extends Phaser.Scene {
     c.add(button(this, cx, cy + 82 * u, 200 * u, 50 * u, 'Got it', go, { primary: true, fontPx: 18 * u }));
   }
 
+  /** Player pressed pause: a real break, so gameplay stops for the SDK. */
+  private openPause() {
+    if (this.phase !== 'play' || this.panel || this.leaving) return;
+    this.paused = true;
+    this.drag = null;
+    crazyGames.gameplayStop();
+    this.showPausePanel();
+  }
+
   private showPausePanel() {
     const u = this.vp.u;
-    const { c, cx, cy } = this.openPanel(170, true);
-    c.add(text(this, cx, cy - 34 * u, 'Paused', 28 * u, COLORS.accent, true));
-    c.add(text(this, cx, cy + 16 * u, 'Tap anywhere to continue', 15 * u, COLORS.textMuted));
-    this.panelPrimary = () => this.resumeFromPause();
+    const { c, cx, cy } = this.openPanel(372);
+    c.add(text(this, cx, cy - 146 * u, 'Paused', 28 * u, COLORS.text, true));
+    const bw = 250 * u;
+    const bh = 50 * u;
+    const resume = () => this.resumeFromPause();
+    this.panelPrimary = resume;
+    c.add(button(this, cx, cy - 86 * u, bw, bh, 'Resume', resume, { primary: true, fontPx: 18 * u }));
+    c.add(button(this, cx, cy - 26 * u, bw, bh, this.mode === 'rush' ? 'Restart board' : 'Restart level', () => {
+      this.paused = false;
+      this.retry();
+    }, { fontPx: 16 * u }));
+    c.add(button(this, cx, cy + 34 * u, bw, bh, 'Level select', () => this.goMap(), { fontPx: 16 * u }));
+
+    // Music, sound and help toggles
+    const ts = 52 * u;
+    const row = cy + 108 * u;
+    const music = iconButton(this, cx - 80 * u, row, ts, 'music', () => {
+      music.setIcon('music', sounds.toggleMusic());
+      musicLbl.setText(sounds.musicOn() ? 'Music on' : 'Music off');
+    }, { silent: true });
+    music.setIcon('music', !sounds.musicOn());
+    const musicLbl = text(this, cx - 80 * u, row + 40 * u, sounds.musicOn() ? 'Music on' : 'Music off', 12 * u, COLORS.textMuted, true);
+    const sfx = iconButton(this, cx, row, ts, 'sound', () => {
+      const off = sounds.toggleMute();
+      sfx.setIcon('sound', off);
+      sfxLbl.setText(off ? 'Sound off' : 'Sound on');
+    }, { silent: true });
+    sfx.setIcon('sound', sounds.isMuted());
+    const sfxLbl = text(this, cx, row + 40 * u, sounds.isMuted() ? 'Sound off' : 'Sound on', 12 * u, COLORS.textMuted, true);
+    const help = iconButton(this, cx + 80 * u, row, ts, 'help', () => this.showHowTo());
+    c.add([music, musicLbl, sfx, sfxLbl, help, text(this, cx + 80 * u, row + 40 * u, 'How to play', 12 * u, COLORS.textMuted, true)]);
+  }
+
+  private showHowTo() {
+    const u = this.vp.u;
+    const { c, cx, cy } = this.openPanel(420);
+    const touch = crazyGames.isTouchDevice();
+    c.add(text(this, cx, cy - 170 * u, 'How to play', 26 * u, COLORS.text, true));
+    const lines = [
+      this.puzzle.kind === 'pattern'
+        ? 'Goal: make the board match the small target picture.'
+        : 'Goal: put the numbers in order, 1 in the top-left.',
+      `${touch ? 'Swipe' : 'Drag'} a row left/right or a column up/down. The tile that slides off one edge comes back on the other side.`,
+      touch ? 'You can also tap the arrows around the board.' : 'Or click the arrows. Keys: arrows slide, W A S D pick a line, Z undo, R retry, H hint, P pause.',
+      'Fewer moves = more stars.',
+    ];
+    // Top-anchored so it grows downward on small screens (11 px minimum text size)
+    c.add(text(this, cx, cy - 140 * u, lines.join('\n\n'), 14 * u, COLORS.text).setOrigin(0.5, 0)
+      .setWordWrapWidth(Math.min(300 * u, this.vp.W * 0.8)).setLineSpacing(2 * u));
+    const back = () => this.showPausePanel();
+    this.panelPrimary = back;
+    c.add(button(this, cx, cy + 160 * u, 200 * u, 50 * u, 'Back', back, { primary: true, fontPx: 17 * u }));
   }
 
   private resumeFromPause() {
     if (!this.paused) return;
     this.paused = false;
     this.closePanel();
+    if (this.phase === 'play') crazyGames.gameplayStart();
   }
 
   private setupVisibility() {
@@ -1440,8 +1550,8 @@ export class GameScene extends Phaser.Scene {
           this.paused = true;
           this.showPausePanel();
         }
-      } else if (!sounds.isMuted()) {
-        sounds.startBGM();
+      } else {
+        sounds.startBGM();   // respects the music switch and platform mute
       }
     };
     document.addEventListener('visibilitychange', onVis);
@@ -1454,10 +1564,9 @@ export class GameScene extends Phaser.Scene {
     const u = this.vp.u;
     const x = this.bx0 + this.span / 2;
     const y = this.by0 - this.arrowOff - this.arrowSize * 0.9;
-    const t = text(this, 0, 0, msg, 14 * u, COLORS.text, true);
-    const bg = this.add.rectangle(0, 0, t.width + 28 * u, 32 * u, COLORS.panelBg, 0.95).setRounded(16 * u)
-      .setStrokeStyle(1.5 * u, COLORS.panelBorder);
-    const c = this.add.container(x, y, [bg, t]).setDepth(40).setAlpha(0);
+    const t = text(this, 0, -1.5 * u, msg, 14 * u, COLORS.text, true);
+    const back = chip(this, 0, 0, t.width + 30 * u, 36 * u, COLORS.panelBg);
+    const c = this.add.container(x, y, [back.base, back.face, t]).setDepth(40).setAlpha(0);
     this.toastObj = c;
     this.tweens.add({ targets: c, alpha: 1, duration: 120 });
     this.tweens.add({ targets: c, alpha: 0, duration: 250, delay: 1500, onComplete: () => c.destroy() });
@@ -1477,8 +1586,8 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < count; i++) {
       const x = W / 2 + Phaser.Math.Between(-80, 80) * u;
       const y = this.by0 + this.span / 2;
-      const piece = this.add.rectangle(x, y, Phaser.Math.Between(6, 11) * u, Phaser.Math.Between(4, 8) * u,
-        colors[i % colors.length]).setDepth(48);
+      const sz = Phaser.Math.Between(6, 10) * u;
+      const piece = this.add.rectangle(x, y, sz, sz, colors[i % colors.length]).setAngle(45).setDepth(48);
       const tx = x + Phaser.Math.Between(-200, 200) * u;
       const ty = y - Phaser.Math.Between(120, 300) * u;
       this.tweens.add({

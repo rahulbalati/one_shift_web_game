@@ -25,31 +25,38 @@ export function triggerHaptic(pattern: number | number[] = 15) {
   }
 }
 
-// 4-chord lo-fi ambient pad cycle: Fmaj7 -> Em7 -> Dm7 -> Cmaj7
-const BGM_CHORDS = [
-  [174.61, 220.00, 261.63, 329.63], // Fmaj7 (F3, A3, C4, E4)
-  [164.81, 196.00, 246.94, 293.66], // Em7 (E3, G3, B3, D4)
-  [146.83, 174.61, 220.00, 261.63], // Dm7 (D3, F3, A3, C4)
-  [130.81, 164.81, 196.00, 246.94], // Cmaj7 (C3, E3, G3, B3)
+// ─── Background music ─────────────────────────────────────────────────────────
+// A light, looping "workshop" groove (I–vi–IV–V in C, 96 BPM): soft chord pad,
+// round bass, plucked arpeggio and quiet off-beat hats. Notes are scheduled a
+// little ahead on the audio clock, so timing stays tight even if the page stutters.
+const BPM = 96;
+const STEP = 60 / BPM / 4;                    // one 16th note, seconds
+const CHORDS: number[][] = [                  // MIDI notes per bar
+  [60, 64, 67],   // C
+  [57, 60, 64],   // Am
+  [53, 57, 60],   // F
+  [55, 59, 62],   // G
 ];
-
-const CHORD_DURATION = 3.6; // seconds per chord
+const ARP = [0, 1, 2, 1, 0, 2, 1, 2];         // chord-tone index per 8th note (-1 = rest)
+const midi = (n: number) => 440 * Math.pow(2, (n - 69) / 12);
 
 class SoundManager {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
-  private muted: boolean = false;
-  private sdkMuted: boolean = false;
-  private bgmPlaying: boolean = false;
-  private bgmChordStep: number = 0;
-  private bgmTimeoutId: number | null = null;
-  private activeBgmNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
-  private currentFilter: BiquadFilterNode | null = null;
-
   private compressor: DynamicsCompressorNode | null = null;
+  private muted = false;          // player's sound-effects switch
+  private musicMuted = false;     // player's music switch
+  private sdkMuted = false;       // CrazyGames platform mute: overrides both
+  private bgmPlaying = false;
+  private musicBus: GainNode | null = null;
+  private noise: AudioBuffer | null = null;
+  private nextNoteTime = 0;
+  private step16 = 0;
+  private schedTimer: number | null = null;
 
-  /** Persists the player's own mute choice (wired to the save system in main.ts). */
+  /** Persist the player's switches (wired to the save system in main.ts). */
   onUserMuteChange: ((muted: boolean) => void) | null = null;
+  onMusicChange: ((muted: boolean) => void) | null = null;
 
   constructor() {
     this.setupLifecycleListeners();
@@ -81,33 +88,18 @@ class SoundManager {
 
   private setupLifecycleListeners() {
     if (typeof document === 'undefined') return;
-
-    const onHidden = () => {
-      this.handleAppBackground();
-    };
-
-    const onVisible = () => {
-      this.handleAppForeground();
-    };
-
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) onHidden();
-      else onVisible();
+      if (document.hidden) this.handleAppBackground();
+      else this.handleAppForeground();
     });
-
-    window.addEventListener('pagehide', onHidden);
-    window.addEventListener('blur', () => {
-      // Gentle pause on blur if mobile tab lost focus
-      if (document.hidden) onHidden();
-    });
-    window.addEventListener('focus', onVisible);
+    window.addEventListener('pagehide', () => this.handleAppBackground());
+    window.addEventListener('blur', () => { if (document.hidden) this.handleAppBackground(); });
+    window.addEventListener('focus', () => this.handleAppForeground());
   }
 
   private handleAppBackground() {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-
-    // Instant micro-fade to silence on master gain (15ms) prevents audio buffer pop/burst
     if (this.masterGain) {
       try {
         this.masterGain.gain.cancelScheduledValues(now);
@@ -115,41 +107,24 @@ class SoundManager {
         this.masterGain.gain.linearRampToValueAtTime(0.0001, now + 0.015);
       } catch (_) {}
     }
-
     this.stopBGM();
-
-    // Cleanly suspend hardware audio context to release OS hardware thread
     try {
-      if (this.ctx.state === 'running') {
-        this.ctx.suspend().catch(() => {});
-      }
+      if (this.ctx.state === 'running') this.ctx.suspend().catch(() => {});
     } catch (_) {}
   }
 
   private handleAppForeground() {
     if (!this.ctx) return;
-
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume().then(() => {
-        if (!this.isMuted() && this.masterGain) {
-          const now = this.ctx!.currentTime;
-          this.masterGain.gain.cancelScheduledValues(now);
-          this.masterGain.gain.setValueAtTime(0.0001, now);
-          this.masterGain.gain.linearRampToValueAtTime(1, now + 0.05);
-          if (!this.bgmPlaying) {
-            this.startBGM();
-          }
-        }
-      }).catch(() => {});
-    } else if (!this.isMuted() && this.masterGain) {
+    const restore = () => {
+      if (!this.ctx || !this.masterGain || this.sdkMuted) return;
       const now = this.ctx.currentTime;
       this.masterGain.gain.cancelScheduledValues(now);
       this.masterGain.gain.setValueAtTime(0.0001, now);
       this.masterGain.gain.linearRampToValueAtTime(1, now + 0.05);
-      if (!this.bgmPlaying) {
-        this.startBGM();
-      }
-    }
+      if (this.musicOn() && !this.bgmPlaying) this.startBGM();
+    };
+    if (this.ctx.state === 'suspended') this.ctx.resume().then(restore).catch(() => {});
+    else restore();
   }
 
   private initCtx() {
@@ -158,16 +133,14 @@ class SoundManager {
       if (AudioCtx) {
         this.ctx = new AudioCtx();
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.setValueAtTime(this.isMuted() ? 0 : 1, this.ctx.currentTime);
-
-        // Dynamics Compressor: keeps audio within 0dB, preventing clipping/distortion during fast tapping
+        this.masterGain.gain.setValueAtTime(this.sdkMuted ? 0 : 1, this.ctx.currentTime);
+        // Keeps the mix under 0 dB during fast tapping
         this.compressor = this.ctx.createDynamicsCompressor();
         this.compressor.threshold.setValueAtTime(-12, this.ctx.currentTime);
         this.compressor.knee.setValueAtTime(30, this.ctx.currentTime);
         this.compressor.ratio.setValueAtTime(12, this.ctx.currentTime);
         this.compressor.attack.setValueAtTime(0.003, this.ctx.currentTime);
         this.compressor.release.setValueAtTime(0.15, this.ctx.currentTime);
-
         this.masterGain.connect(this.compressor);
         this.compressor.connect(this.ctx.destination);
       }
@@ -180,153 +153,155 @@ class SoundManager {
 
   resume() {
     this.initCtx();
-    if (!this.isMuted()) {
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
-      }
-      if (!this.bgmPlaying) {
-        this.startBGM();
-      }
-    }
+    if (this.masterGain && this.ctx) this.masterGain.gain.setValueAtTime(this.sdkMuted ? 0 : 1, this.ctx.currentTime);
+    if (this.musicOn() && !this.bgmPlaying) this.startBGM();
   }
 
+  /** CrazyGames muteAudio setting: silences everything and wins over the in-game switches. */
   setSdkMute(muted: boolean) {
     this.sdkMuted = muted;
-    if (this.isMuted()) {
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
-      }
-      this.stopBGM();
-    } else {
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
-      }
-      if (!this.bgmPlaying) {
-        this.startBGM();
-      }
-    }
+    if (this.masterGain && this.ctx) this.masterGain.gain.setValueAtTime(muted ? 0 : 1, this.ctx.currentTime);
+    if (!this.musicOn()) this.stopBGM();
+    else if (!this.bgmPlaying) this.startBGM();
   }
 
+  /** Sound effects are off (player switch or platform mute). */
   isMuted(): boolean {
     return this.muted || this.sdkMuted;
   }
 
-  /** Restores the saved in-game mute choice at boot (no sound, no save). */
-  setUserMuted(muted: boolean) {
-    this.muted = muted;
-    if (this.isMuted()) this.stopBGM();
+  musicOn(): boolean {
+    return !this.musicMuted && !this.sdkMuted;
   }
 
+  /** Restores saved switches at boot (no sound, no save). */
+  setUserMuted(muted: boolean) {
+    this.muted = muted;
+  }
+
+  setMusicMuted(muted: boolean) {
+    this.musicMuted = muted;
+    if (!this.musicOn()) this.stopBGM();
+  }
+
+  /** Sound-effects switch. Returns true when effects are now off. */
   toggleMute(): boolean {
     this.muted = !this.muted;
     this.onUserMuteChange?.(this.muted);
-    if (this.isMuted()) {
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);
-      }
-      this.stopBGM();
-    } else {
-      this.initCtx();
-      if (this.masterGain && this.ctx) {
-        this.masterGain.gain.setValueAtTime(1, this.ctx.currentTime);
-      }
-      this.playClick();
-      this.startBGM();
-    }
+    if (!this.isMuted()) this.playClick();
     return this.isMuted();
   }
 
-  // ─── Procedural Lo-Fi Ambient BGM ───────────────────────────────────────────
-  startBGM() {
-    if (this.isMuted() || this.bgmPlaying) return;
-    this.initCtx();
-    if (!this.ctx) return;
+  /** Music switch. Returns true when music is now off. */
+  toggleMusic(): boolean {
+    this.musicMuted = !this.musicMuted;
+    this.onMusicChange?.(this.musicMuted);
+    if (this.musicOn()) { this.initCtx(); this.startBGM(); } else this.stopBGM();
+    return !this.musicOn();
+  }
 
+  // ─── Music sequencer ─────────────────────────────────────────────────────────
+  startBGM() {
+    if (!this.musicOn() || this.bgmPlaying) return;
+    this.initCtx();
+    if (!this.ctx || !this.masterGain) return;
     this.bgmPlaying = true;
-    this.bgmChordStep = 0;
-    this.scheduleChord();
+    this.musicBus = this.ctx.createGain();
+    this.musicBus.gain.setValueAtTime(0.0001, this.ctx.currentTime);
+    this.musicBus.gain.linearRampToValueAtTime(1, this.ctx.currentTime + 1.5);
+    this.musicBus.connect(this.masterGain);
+    if (!this.noise) {
+      const len = Math.floor(this.ctx.sampleRate * 0.05);
+      this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = this.noise.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    }
+    this.nextNoteTime = this.ctx.currentTime + 0.1;
+    this.step16 = 0;
+    this.schedule();
   }
 
   stopBGM() {
     this.bgmPlaying = false;
-    if (this.bgmTimeoutId !== null) {
-      window.clearTimeout(this.bgmTimeoutId);
-      this.bgmTimeoutId = null;
+    if (this.schedTimer !== null) {
+      window.clearTimeout(this.schedTimer);
+      this.schedTimer = null;
     }
-    if (this.ctx) {
+    const bus = this.musicBus;
+    this.musicBus = null;
+    if (bus && this.ctx) {
       const now = this.ctx.currentTime;
-      for (const node of this.activeBgmNodes) {
-        try {
-          node.gain.gain.cancelScheduledValues(now);
-          node.gain.gain.setValueAtTime(node.gain.gain.value, now);
-          node.gain.gain.linearRampToValueAtTime(0.0001, now + 0.04);
-          node.osc.stop(now + 0.05);
-        } catch (_) {}
-      }
-    }
-    this.activeBgmNodes = [];
-    if (this.currentFilter) {
       try {
-        this.currentFilter.disconnect();
+        bus.gain.cancelScheduledValues(now);
+        bus.gain.setValueAtTime(bus.gain.value, now);
+        bus.gain.linearRampToValueAtTime(0.0001, now + 0.08);
       } catch (_) {}
-      this.currentFilter = null;
+      window.setTimeout(() => { try { bus.disconnect(); } catch (_) {} }, 300);
     }
   }
 
-  private scheduleChord() {
-    if (!this.bgmPlaying || this.isMuted() || !this.ctx || !this.masterGain) return;
-
-    const chord = BGM_CHORDS[this.bgmChordStep % BGM_CHORDS.length];
-    this.bgmChordStep++;
-    const now = this.ctx.currentTime;
-
-    // Disconnect previous filter to prevent node leaks
-    if (this.currentFilter) {
-      try { this.currentFilter.disconnect(); } catch (_) {}
+  private schedule() {
+    if (!this.bgmPlaying || !this.ctx || !this.musicBus) return;
+    const ahead = this.ctx.currentTime + 0.3;
+    while (this.nextNoteTime < ahead) {
+      this.playStep(this.step16, this.nextNoteTime);
+      this.nextNoteTime += STEP;
+      this.step16 = (this.step16 + 1) % (16 * CHORDS.length);
     }
+    this.schedTimer = window.setTimeout(() => this.schedule(), 100);
+  }
 
-    // Filter to give that warm, mellow lo-fi aesthetic
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(540, now);
-    filter.Q.setValueAtTime(0.7, now);
-    filter.connect(this.masterGain);
-    this.currentFilter = filter;
-
-    const newNodes: { osc: OscillatorNode; gain: GainNode }[] = [];
-
-    // Synthesize gentle ambient sine waves with soft attack/decay
-    for (const freq of chord) {
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, now);
-
-      // Micro detune for lush chorus warmth
-      osc.detune.setValueAtTime((Math.random() - 0.5) * 8, now);
-
-      // Smooth attack -> sustain -> release envelope
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.linearRampToValueAtTime(0.026, now + 1.2); // Gentle fade in
-      gain.gain.setValueAtTime(0.026, now + CHORD_DURATION - 1.2);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + CHORD_DURATION); // Gentle fade out
-
-      osc.connect(gain);
-      gain.connect(filter);
-
-      osc.start(now);
-      osc.stop(now + CHORD_DURATION + 0.05);
-
-      newNodes.push({ osc, gain });
+  private voice(type: OscillatorType, freq: number, t: number, dur: number, vol: number, attack = 0.005, cutoff = 0) {
+    const ctx = this.ctx!;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g);
+    if (cutoff) {
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.setValueAtTime(cutoff, t);
+      g.connect(f);
+      f.connect(this.musicBus!);
+    } else {
+      g.connect(this.musicBus!);
     }
+    osc.start(t);
+    osc.stop(t + dur + 0.02);
+  }
 
-    this.activeBgmNodes = newNodes;
-
-    // Schedule next chord with slight overlap
-    this.bgmTimeoutId = window.setTimeout(() => {
-      this.scheduleChord();
-    }, (CHORD_DURATION - 0.4) * 1000);
+  private playStep(step: number, t: number) {
+    const bar = Math.floor(step / 16);
+    const s = step % 16;
+    const chord = CHORDS[bar];
+    // Pad: whole-bar chord, soft and filtered
+    if (s === 0) for (const n of chord) this.voice('triangle', midi(n), t, STEP * 16, 0.018, 0.35, 900);
+    // Bass: root on beats 1 and 3, a fifth on the "and" of 4
+    if (s === 0 || s === 8) this.voice('sine', midi(chord[0] - 24), t, STEP * 6, 0.07, 0.01);
+    if (s === 14) this.voice('sine', midi(chord[2] - 24), t, STEP * 2, 0.05, 0.01);
+    // Plucked arpeggio on 8th notes, an octave up
+    if (s % 2 === 0) {
+      const idx = ARP[(s / 2) % ARP.length];
+      if (idx >= 0) this.voice('sine', midi(chord[idx] + 12), t, STEP * 3, 0.035, 0.004);
+    }
+    // Hats on the off-beats
+    if (s % 4 === 2 && this.noise && this.ctx) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'highpass';
+      f.frequency.setValueAtTime(7000, t);
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.018, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+      src.connect(f); f.connect(g); g.connect(this.musicBus!);
+      src.start(t);
+      src.stop(t + 0.05);
+    }
   }
 
   // ─── SFX: Button Click ──────────────────────────────────────────────────────

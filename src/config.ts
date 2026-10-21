@@ -1,32 +1,40 @@
-// ─── Color palette ───────────────────────────────────────────────────────────
+// ─── Color palette: "Gem Workshop" theme ─────────────────────────────────────
 export const COLORS = {
-  bgDeep:       0x0a0f2e,   // deep navy
-  bgPanel:      0x111836,   // slightly lighter panel
-  bgCard:       0x0d1533,   // board background
-  slot:         0x161f45,   // empty cell slot
-  accent:       0x00d4aa,   // cyan accent
-  accentHover:  0x00ffcc,
-  arrowBg:      0x1e2d5a,
-  arrowHover:   0x2a3d78,
-  arrowStroke:  0x334d99,
-  text:         0xdce8ff,
-  textMuted:    0x7b8cc0,
-  warning:      0xf5a623,
+  bgDeep:       0x24164f,   // page / scene background (violet)
+  bgPanel:      0x2e1f66,   // raised panels
+  bgCard:       0x1b1240,   // board well
+  slot:         0x2a1d5c,   // empty cell slot
+  accent:       0x2fd3c0,   // teal accent / primary buttons
+  accentHover:  0x7ff0e0,
+  accentShadow: 0x1a8f82,
+  onAccent:     0x06302b,   // text on teal
+  arrowBg:      0x3a2a7a,   // button face
+  arrowHover:   0x4a3892,
+  arrowStroke:  0x22184d,   // button shadow / outline
+  text:         0xf3eaff,
+  textMuted:    0xcbb9ff,
+  warning:      0xffc43d,   // gold: stars, hint
+  warningShadow:0xb8860b,
+  onWarning:    0x3a2400,
   danger:       0xff5d6c,
-  panelBg:      0x080d24,
-  panelBorder:  0x26366a,
-  lock:         0x8a93b8,
-  conveyor:     0xffc145,
+  panelBg:      0x2e1f66,
+  panelBorder:  0x1b1240,
+  tileText:     0x1b1240,
+  lock:         0x9aa3c7,
+  conveyor:     0xf5b52e,
   link:         0xff6fa5,
   white:        0xffffff,
   black:        0x000000,
 } as const;
 
+/** Background colour as RGB, for camera fades. */
+export const BG_RGB: [number, number, number] = [0x24, 0x16, 0x4f];
+
 // Row colours for numbered tiles (tile colour = the row it belongs to)
-export const ROW_COLORS = [0x2ec4b6, 0x8b7cf6, 0xff8a5c, 0xffc145, 0x5fa8ff];
+export const ROW_COLORS = [0x2fd3c0, 0xa77bff, 0xff9a6b, 0xffc43d, 0x5fa8ff];
 
 // Colours for shape (pattern) tiles: base, pink, teal
-export const PATTERN_COLORS = [0x4a5aa8, 0xff6fa5, 0x2ec4b6];
+export const PATTERN_COLORS = [0x5a4aa8, 0xff6fa5, 0x2fd3c0];
 
 export const hex = (c: number) => '#' + c.toString(16).padStart(6, '0');
 

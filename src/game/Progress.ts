@@ -7,6 +7,7 @@ const K_RUSH = 'os2_rush_best';
 const K_SEEN = 'os2_seen_intros';
 const K_HINTS = 'os2_hint_tokens';
 const K_MUTED = 'os2_sound_muted';
+const K_MUSIC = 'os2_music_muted';
 const STORY_LEVELS = 60;   // worlds 1–6; world 7 is endless
 
 export const START_HINTS = 3;
@@ -101,6 +102,14 @@ export const progress = {
 
   setSoundMuted(muted: boolean): void {
     crazyGames.setItem(K_MUTED, muted ? '1' : '0');
+  },
+
+  musicMuted(): boolean {
+    return crazyGames.getItem(K_MUSIC) === '1';
+  },
+
+  setMusicMuted(muted: boolean): void {
+    crazyGames.setItem(K_MUSIC, muted ? '1' : '0');
   },
 
   seenIntro(world: number): boolean {
