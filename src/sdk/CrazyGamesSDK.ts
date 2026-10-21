@@ -47,6 +47,23 @@ class CrazyGamesBridge {
   private hasLoadingStarted = false;
   private hasLoadingStopped = false;
   private pendingLoadingStop = false;
+  private readBeforeInit = false;
+  private lateInitListeners: (() => void)[] = [];
+
+  /** Runs `fn` if the SDK finishes initialising after the game already read save data. */
+  onLateInit(fn: () => void): void {
+    this.lateInitListeners.push(fn);
+  }
+
+  /** Raw value from one storage source, used to reconcile saves after a late init. */
+  getRaw(source: 'sdk' | 'local', key: string): string | null {
+    try {
+      if (source === 'sdk') return this.initialized ? window.CrazyGames?.SDK?.data?.getItem(key) ?? null : null;
+      return localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
+  }
 
   async init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -56,6 +73,11 @@ class CrazyGamesBridge {
         if (typeof window !== 'undefined' && window.CrazyGames?.SDK) {
           await window.CrazyGames.SDK.init();
           this.initialized = true;
+          if (this.readBeforeInit) {
+            for (const fn of this.lateInitListeners) {
+              try { fn(); } catch (_) {}
+            }
+          }
 
           // Platform audio muting support
           const initialMute = window.CrazyGames.SDK.game?.settings?.muteAudio;
@@ -136,6 +158,7 @@ class CrazyGamesBridge {
 
   // ─── Data Module (Cloud save on CrazyGames, localStorage fallback) ──────────
   getItem(key: string): string | null {
+    if (!this.initialized) this.readBeforeInit = true;
     if (this.initialized) {
       try {
         if (window.CrazyGames?.SDK?.data) {
@@ -184,6 +207,7 @@ class CrazyGamesBridge {
   requestMidgameAd(onComplete?: () => void): void {
     let completed = false;
     let started = false;
+    let timedOut = false;
     const finish = () => {
       if (!completed) {
         completed = true;
@@ -192,7 +216,12 @@ class CrazyGamesBridge {
       }
     };
     // Never leave the player stuck if the SDK never responds (but never cut a running ad)
-    window.setTimeout(() => { if (!started) finish(); }, 5000);
+    window.setTimeout(() => {
+      if (!started) {
+        timedOut = true;
+        finish();
+      }
+    }, 5000);
 
     try {
       if (window.CrazyGames?.SDK?.ad?.requestAd) {
@@ -202,6 +231,9 @@ class CrazyGamesBridge {
             sounds.stopBGM();
           },
           adFinished: () => {
+            // An ad that started after the fallback fired: the game already moved on,
+            // so only restore the music it muted.
+            if (timedOut) sounds.startBGM();
             finish();
           },
           adError: (err) => {

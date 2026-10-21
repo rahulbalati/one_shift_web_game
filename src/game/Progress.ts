@@ -100,3 +100,37 @@ export const progress = {
     }
   },
 };
+
+// If the SDK finished initialising only after the game had started (slow network),
+// saves made so far went to localStorage only. Merge both sources so progress never
+// rolls back: highest level / stars / Rush best win, seen intros are unioned, and the
+// hint count from this session is kept.
+function reconcileLateInit(): void {
+  const both = (key: string) => ({ sdk: crazyGames.getRaw('sdk', key), local: crazyGames.getRaw('local', key) });
+  const parse = <T>(raw: string | null, fallback: T): T => {
+    try { return raw ? (JSON.parse(raw) as T) : fallback; } catch (_) { return fallback; }
+  };
+  const maxInt = (key: string) => {
+    const v = both(key);
+    const n = Math.max(parseInt(v.sdk || '0', 10) || 0, parseInt(v.local || '0', 10) || 0);
+    if (n > 0) crazyGames.setItem(key, String(n));
+  };
+  maxInt(K_MAX);
+  maxInt(K_RUSH);
+
+  const stars = both(K_STARS);
+  const merged: Record<string, number> = { ...parse<Record<string, number>>(stars.sdk, {}) };
+  for (const [lvl, n] of Object.entries(parse<Record<string, number>>(stars.local, {}))) {
+    merged[lvl] = Math.max(merged[lvl] ?? 0, n);
+  }
+  crazyGames.setItem(K_STARS, JSON.stringify(merged));
+
+  const seen = both(K_SEEN);
+  const union = [...new Set([...parse<number[]>(seen.sdk, []), ...parse<number[]>(seen.local, [])])];
+  crazyGames.setItem(K_SEEN, JSON.stringify(union));
+
+  const hints = both(K_HINTS).local;
+  if (hints !== null) crazyGames.setItem(K_HINTS, hints);
+}
+
+crazyGames.onLateInit(reconcileLateInit);

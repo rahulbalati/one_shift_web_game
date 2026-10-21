@@ -73,6 +73,12 @@ async function bootstrap() {
   };
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', resize);
+  // The frame can start hidden or zero-sized (e.g. an iframe shown after load) and gain
+  // its real size without a window resize event, so watch the container itself too.
+  const container = document.getElementById('game-container');
+  if (container && 'ResizeObserver' in window) new ResizeObserver(resize).observe(container);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) resize(); });
+  resize();
 
   // Platform hooks (Telegram, YouTube Playables)
   try {

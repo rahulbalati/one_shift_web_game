@@ -52,6 +52,10 @@ interface Snapshot {
   phase: Phase;
   stars: number;
   paused: boolean;
+  resolved: boolean;      // the win/fail/rush-solve outcome has been applied
+  worldDone: boolean;     // this clear completed a world for the first time
+  hintShown: boolean;
+  rushIsBest: boolean;
   rush?: RushState;
 }
 
@@ -70,6 +74,7 @@ interface DragState {
   col: number;
   axis: 'x' | 'y' | null;
   fired: number;      // net shifts made by this drag (signed)
+  base: number;       // history length when the drag started (never undo below it)
   blocked: boolean;
 }
 
@@ -93,6 +98,10 @@ export class GameScene extends Phaser.Scene {
   private stars = 0;
   private paused = false;
   private rush: RushState | null = null;
+  private resolved = false;
+  private worldDone = false;
+  private restoreHint = false;
+  private rushIsBest = false;
   private restoring = false;
   private leaving = false;
 
@@ -158,6 +167,8 @@ export class GameScene extends Phaser.Scene {
     this.drag = null;
     this.leaving = false;
     this.keyboardUsed = false;
+    this.selRow = 0;
+    this.selCol = 0;
 
     const r = data.restore;
     this.restoring = !!r;
@@ -173,8 +184,15 @@ export class GameScene extends Phaser.Scene {
       this.phase = r.phase;
       this.stars = r.stars;
       this.paused = r.paused;
+      this.resolved = r.resolved;
+      this.worldDone = r.worldDone;
+      this.restoreHint = r.hintShown;
+      this.rushIsBest = r.rushIsBest;
       this.rush = r.rush ? { ...r.rush } : null;
     } else {
+      this.worldDone = false;
+      this.restoreHint = false;
+      this.rushIsBest = false;
       this.rush = this.mode === 'rush'
         ? { score: 0, index: 0, timeLeft: RUSH_START_MS, seed: Math.floor(Math.random() * 1e6) }
         : null;
@@ -194,6 +212,7 @@ export class GameScene extends Phaser.Scene {
     this.usedBonus = false;
     this.usedHint = false;
     this.earnedHints = 0;
+    this.resolved = false;
   }
 
   create() {
@@ -213,9 +232,13 @@ export class GameScene extends Phaser.Scene {
 
     if (!this.restoring) this.cameras.main.fadeIn(160, 10, 15, 46);
 
-    // Re-open whatever overlay was showing before a resize
-    if (this.phase === 'won') this.showWinPanel(false);
-    else if (this.phase === 'failed') this.showFailPanel();
+    // Re-open whatever overlay was showing before a resize. If the outcome had not
+    // been applied yet (resize inside the short post-move delay), apply it now.
+    if (this.phase === 'won') {
+      if (this.resolved) this.showWinPanel(false); else this.onSolved();
+    } else if (this.phase === 'failed') {
+      if (this.resolved) this.showFailPanel(); else this.onFail();
+    }
     else if (this.phase === 'rushover') this.showRushOverPanel(false);
     else if (this.paused) this.showPausePanel();
     else this.startPlay();
@@ -232,6 +255,10 @@ export class GameScene extends Phaser.Scene {
     this.phase = 'play';
     crazyGames.gameplayStart();
     this.showLevelTip();
+    if (this.restoreHint) {
+      this.restoreHint = false;
+      this.showHint(false);   // a hint paid for before the resize stays visible
+    }
   }
 
   update(_time: number, delta: number) {
@@ -248,6 +275,7 @@ export class GameScene extends Phaser.Scene {
 
   private snapshot(): Snapshot {
     if (this.phase === 'transition' && this.rush) {
+      if (!this.resolved) this.applyRushSolve();   // credit a solve whose bonus was still pending
       this.advanceRushPuzzle();
       this.phase = 'play';
     }
@@ -263,6 +291,10 @@ export class GameScene extends Phaser.Scene {
       phase: this.phase === 'intro' ? 'play' : this.phase,
       stars: this.stars,
       paused: this.paused,
+      resolved: this.resolved,
+      worldDone: this.worldDone,
+      hintShown: this.hintObjs.length > 0 && this.level > 2,
+      rushIsBest: this.rushIsBest,
       rush: this.rush ?? undefined,
     };
   }
@@ -420,7 +452,9 @@ export class GameScene extends Phaser.Scene {
         g.lineBetween(x, a, x, b);
         g.fillStyle(COLORS.link, 1).fillCircle(x, a, 4 * u).fillCircle(x, b, 4 * u);
       } else {
-        const y = this.by0 - off;
+        // Above the board normally; below it when the portrait shape preview sits above
+        const below = !this.vp.landscape && this.puzzle.kind === 'pattern';
+        const y = below ? this.by0 + this.span + off : this.by0 - off;
         g.lineBetween(a, y, b, y);
         g.fillStyle(COLORS.link, 1).fillCircle(a, y, 4 * u).fillCircle(b, y, 4 * u);
       }
@@ -692,7 +726,7 @@ export class GameScene extends Phaser.Scene {
         id: p.id, x0: p.x, y0: p.y, t0: p.downTime,
         row: Phaser.Math.Clamp(Math.floor(ry / this.step), 0, n - 1),
         col: Phaser.Math.Clamp(Math.floor(rx / this.step), 0, n - 1),
-        axis: null, fired: 0, blocked: false,
+        axis: null, fired: 0, base: this.history.length, blocked: false,
       };
     });
 
@@ -709,7 +743,8 @@ export class GameScene extends Phaser.Scene {
       const dist = d.axis === 'x' ? dx : dy;
       const a = Math.abs(dist);
       const n = this.puzzle.size;
-      const target = a < th ? 0 : Math.sign(dist) * Math.min(n - 1, 1 + Math.floor((a - th) / (this.step * 0.85)));
+      // Snap to the nearest whole tile (a small nudge past the threshold still counts as one)
+      const target = a < th ? 0 : Math.sign(dist) * Math.min(n - 1, Math.max(1, Math.round(a / this.step)));
       this.syncDrag(d, target);
     });
 
@@ -756,10 +791,11 @@ export class GameScene extends Phaser.Scene {
         const move: MoveRecord = d.axis === 'x'
           ? { type: 'row', index: d.row, direction: sgn > 0 ? 'right' : 'left' }
           : { type: 'col', index: d.col, direction: sgn > 0 ? 'down' : 'up' };
-        if (!this.tryMove(move)) { d.blocked = true; return; }
+        if (!this.tryMove(move, true)) { d.blocked = true; return; }
         d.fired += sgn;
       } else {
-        if (!this.undoLast()) return;
+        // Only ever take back shifts this drag made itself
+        if (this.history.length <= d.base || !this.undoLast(true)) return;
         d.fired -= Math.sign(d.fired);
       }
     }
@@ -810,8 +846,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ─── Moves ──────────────────────────────────────────────────────────────────
-  private tryMove(move: MoveRecord): boolean {
+  private tryMove(move: MoveRecord, fromDrag = false): boolean {
     if (this.phase !== 'play' || this.paused || this.panel) return false;
+    if (!fromDrag) this.drag = null;   // a tap/key mid-drag ends that drag
     if (!canMove(move, this.puzzle.rules)) {
       this.blockedFeedback(move);
       return false;
@@ -831,8 +868,9 @@ export class GameScene extends Phaser.Scene {
     return true;
   }
 
-  private undoLast(): boolean {
+  private undoLast(fromDrag = false): boolean {
     if (this.phase !== 'play' || this.paused || this.panel || !this.history.length) return false;
+    if (!fromDrag) this.drag = null;
     const rev = reverseMove(this.history.pop()!);
     const old = this.board;
     this.board = applyMove(old, this.puzzle.size, rev, this.puzzle.rules);
@@ -961,12 +999,17 @@ export class GameScene extends Phaser.Scene {
       const t = this.tiles[this.board[pos]];
       if (t.tw) continue;
       const home = this.posXY(pos);
-      this.tweens.add({
+      // Stored in t.tw so any real move or retry stops it before animating
+      t.tw = this.tweens.add({
         targets: t.c,
         x: move.type === 'row' ? home.x + off : home.x,
         y: move.type === 'col' ? home.y + off : home.y,
         duration: 50, yoyo: true, repeat: 1,
-        onComplete: () => t.c.setPosition(home.x, home.y),
+        onComplete: () => {
+          t.tw = null;
+          const at = this.posXY(this.board.indexOf(t.id));
+          t.c.setPosition(at.x, at.y);
+        },
       });
     }
     if (isLocked(this.puzzle.rules, move.type, move.index)) this.toast('That line is locked');
@@ -976,6 +1019,7 @@ export class GameScene extends Phaser.Scene {
   // ─── Hints ──────────────────────────────────────────────────────────────────
   private clearHint() {
     for (const tw of this.hintTweens) tw.stop();
+    for (const a of this.arrows) a.c.setScale(1);
     for (const o of this.hintObjs) o.destroy();
     this.hintTweens = [];
     this.hintObjs = [];
@@ -1070,12 +1114,16 @@ export class GameScene extends Phaser.Scene {
     if (!this.rush || this.phase !== 'play' || this.paused) return;
     this.rush.timeLeft = Math.max(1, this.rush.timeLeft - 5000);
     this.floatText('−5s', COLORS.danger);
+    this.drag = null;
+    this.resolved = true;   // a skip earns nothing
     this.phase = 'transition';
     this.time.delayedCall(120, () => this.nextRushBoard());
   }
 
   // ─── Level results ──────────────────────────────────────────────────────────
   private onSolved() {
+    if (this.phase !== 'won' || this.resolved) return;
+    this.resolved = true;
     this.stars = this.currentStars();
     const prevStars = progress.stars(this.level);
     const firstClear = progress.recordClear(this.level, this.stars);
@@ -1083,15 +1131,15 @@ export class GameScene extends Phaser.Scene {
     this.earnedHints = 0;
     if (!this.freeHints() && this.stars === 3 && prevStars < 3) this.earnedHints += HINTS_PER_PERFECT;
     const w = worldOf(this.level);
-    if (firstClear && w.last !== null && this.level === w.last) this.earnedHints += HINTS_PER_WORLD;
+    this.worldDone = firstClear && w.last !== null && this.level === w.last;
+    if (this.worldDone) this.earnedHints += HINTS_PER_WORLD;
     if (this.earnedHints) {
       progress.addHints(this.earnedHints);
       this.updateHintBadge();
     }
     crazyGames.gameplayStop();
     // happytime is for real achievements only (SDK rule: not for level completion)
-    const world = worldOf(this.level);
-    if (world.last !== null && this.level === world.last) crazyGames.happytime();
+    if (this.worldDone) crazyGames.happytime();
     sounds.playVictory();
     triggerHaptic([30, 50, 30]);
     this.celebrateTiles();
@@ -1111,6 +1159,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private onFail() {
+    if (this.phase !== 'failed' || this.resolved) return;   // e.g. Retry tapped during the delay
+    this.resolved = true;
     crazyGames.gameplayStop();
     sounds.playTimeUp();
     triggerHaptic([20, 40, 20]);
@@ -1120,7 +1170,7 @@ export class GameScene extends Phaser.Scene {
   private goNextLevel() {
     if (this.leaving) return;
     const world = worldOf(this.level);
-    const finishedWorld = world.last !== null && this.level === world.last;
+    const finishedWorld = this.worldDone;   // only the first completion goes to the map
     this.leaving = true;
     crazyGames.maybeMidgameAd(this.level, () => {
       this.cameras.main.fadeOut(140, 10, 15, 46);
@@ -1140,12 +1190,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ─── Shift Rush ─────────────────────────────────────────────────────────────
-  private onRushSolved() {
+  private applyRushSolve(): { gain: number; perfect: boolean } {
     const r = this.rush!;
+    this.resolved = true;
     r.score++;
     const perfect = this.moves <= this.puzzle.par;
     const gain = RUSH_BONUS_MS + (perfect ? RUSH_PERFECT_BONUS_MS : 0);
     r.timeLeft = Math.min(RUSH_MAX_MS, r.timeLeft + gain);
+    return { gain, perfect };
+  }
+
+  private onRushSolved() {
+    if (this.phase !== 'transition' || this.resolved) return;
+    const { gain, perfect } = this.applyRushSolve();
     sounds.playBonus();
     triggerHaptic(20);
     this.floatText(`+${gain / 1000}s${perfect ? '  Perfect!' : ''}`, COLORS.warning);
@@ -1162,8 +1219,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private nextRushBoard() {
-    if (!this.rush || this.phase === 'rushover') return;
+    if (!this.rush || this.phase !== 'transition') return;
+    this.drag = null;
     this.advanceRushPuzzle();
+    // Boards can change size between Rush rounds: keep the keyboard cursor on the board
+    this.selRow = Math.min(this.selRow, this.puzzle.size - 1);
+    this.selCol = Math.min(this.selCol, this.puzzle.size - 1);
     this.buildBoardView(true);
     this.drawSelection();
     this.refreshStates(false, []);
@@ -1215,7 +1276,7 @@ export class GameScene extends Phaser.Scene {
   private showWinPanel(fresh: boolean) {
     const u = this.vp.u;
     const world = worldOf(this.level);
-    const finishedWorld = world.last !== null && this.level === world.last;
+    const finishedWorld = this.worldDone;
     const { c, cx, cy } = this.openPanel(280, this.stars === 3 && !finishedWorld);
     const titles = ['Solved!', 'Solved!', 'Great!', 'Perfect!'];
     c.add(text(this, cx, cy - 102 * u, finishedWorld ? 'World complete!' : titles[this.stars], 30 * u, COLORS.accent, true));
@@ -1296,6 +1357,7 @@ export class GameScene extends Phaser.Scene {
   private addBonusMoves() {
     this.usedBonus = true;
     this.bonus += 3;
+    this.resolved = false;   // a second fail must show its panel again
     this.closePanel();
     this.phase = 'play';
     this.updateHud();
@@ -1306,7 +1368,8 @@ export class GameScene extends Phaser.Scene {
     const u = this.vp.u;
     const r = this.rush!;
     const best = progress.rushBest();
-    const isBest = fresh ? progress.recordRush(r.score) : r.score >= best && r.score > 0;
+    if (fresh) this.rushIsBest = progress.recordRush(r.score);
+    const isBest = this.rushIsBest;
     if (fresh && isBest) crazyGames.happytime();
     const { c, cx, cy } = this.openPanel(280);
     c.add(text(this, cx, cy - 100 * u, "Time's up!", 30 * u, COLORS.warning, true));
