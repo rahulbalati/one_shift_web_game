@@ -30,6 +30,7 @@ export class MapScene extends Phaser.Scene {
 
   create() {
     crazyGames.gameplayStop();
+    crazyGames.setLevelContext(null);
     this.vp = viewport(this);
     const { vp } = this;
     const u = vp.u;

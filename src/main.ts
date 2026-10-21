@@ -4,6 +4,8 @@ import { GameScene } from './scenes/GameScene.ts';
 import { MapScene } from './scenes/MapScene.ts';
 import { COLORS } from './config.ts';
 import { crazyGames } from './sdk/CrazyGamesSDK.ts';
+import { progress } from './game/Progress.ts';
+import { sounds } from './audio/SoundManager.ts';
 
 // ─── Canvas sizing ────────────────────────────────────────────────────────────
 // The canvas always matches the frame's aspect ratio (portrait on phones,
@@ -47,17 +49,28 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 async function bootstrap() {
+  // Browser defaults that would move the CrazyGames page around the game
+  // (CrazyGames "Common fixes"): context menu, touch scroll, mouse-wheel scroll,
+  // and arrow keys / space scrolling.
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+  window.addEventListener('wheel', e => e.preventDefault(), { passive: false });
+  window.addEventListener('keydown', e => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code) || e.key === ' ') e.preventDefault();
+  });
 
-  // Fonts and the SDK load in parallel, each with a short cap so a slow network
-  // never holds the game back.
+  // The SDK must be fully initialised before any save data is read, so the game is
+  // created only after init (it has its own timeout). Fonts load in parallel, capped.
   const cap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
   const fonts = 'fonts' in document ? document.fonts.ready.then(() => undefined).catch(() => undefined) : Promise.resolve();
   await Promise.all([
     Promise.race([fonts, cap(700)]),
-    Promise.race([crazyGames.init().catch(() => undefined), cap(1500)]),
+    crazyGames.init(),
   ]);
+
+  // Restore the player's own sound choice from the save (Data Module on CrazyGames)
+  sounds.setUserMuted(progress.soundMuted());
+  sounds.onUserMuteChange = muted => progress.setSoundMuted(muted);
 
   crazyGames.loadingStart();
   const game = new Phaser.Game(config);

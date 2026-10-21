@@ -2,11 +2,24 @@
 // Zero-dependency, lightweight, 100% synthesized SFX & Lo-Fi ambient BGM for ONE SHIFT
 // Zero external audio files / 0 copyright risk
 
-export function triggerHaptic(pattern: number | number[] = 15) {
+// Vibration only on touch screens, and only after the player has interacted with the
+// page: Chrome logs a console error for every vibrate() before a user gesture (e.g. a
+// desktop keyboard player), and desktops cannot vibrate anyway.
+const canVibrate = (() => {
   try {
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      navigator.vibrate(pattern);
-    }
+    return typeof navigator !== 'undefined' && 'vibrate' in navigator &&
+      window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+})();
+
+export function triggerHaptic(pattern: number | number[] = 15) {
+  if (!canVibrate) return;
+  try {
+    const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
+    if (activation && !activation.hasBeenActive) return;
+    navigator.vibrate(pattern);
   } catch {
     // Ignored if not supported or disabled by browser
   }
@@ -35,12 +48,10 @@ class SoundManager {
 
   private compressor: DynamicsCompressorNode | null = null;
 
+  /** Persists the player's own mute choice (wired to the save system in main.ts). */
+  onUserMuteChange: ((muted: boolean) => void) | null = null;
+
   constructor() {
-    try {
-      this.muted = typeof localStorage !== 'undefined' && localStorage.getItem('oneshift_muted') === 'true';
-    } catch (_) {
-      this.muted = false;
-    }
     this.setupLifecycleListeners();
     this.setupAudioUnlock();
   }
@@ -200,13 +211,15 @@ class SoundManager {
     return this.muted || this.sdkMuted;
   }
 
+  /** Restores the saved in-game mute choice at boot (no sound, no save). */
+  setUserMuted(muted: boolean) {
+    this.muted = muted;
+    if (this.isMuted()) this.stopBGM();
+  }
+
   toggleMute(): boolean {
     this.muted = !this.muted;
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('oneshift_muted', String(this.muted));
-      }
-    } catch (_) {}
+    this.onUserMuteChange?.(this.muted);
     if (this.isMuted()) {
       if (this.masterGain && this.ctx) {
         this.masterGain.gain.setValueAtTime(0, this.ctx.currentTime);

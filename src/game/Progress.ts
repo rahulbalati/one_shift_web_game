@@ -1,11 +1,13 @@
 import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
 
-// Saved through the CrazyGames data module (cloud save), with localStorage fallback.
+// Saved through the CrazyGames Data Module; localStorage only when the SDK is unavailable.
 const K_MAX = 'os2_max_level';
 const K_STARS = 'os2_stars';
 const K_RUSH = 'os2_rush_best';
 const K_SEEN = 'os2_seen_intros';
 const K_HINTS = 'os2_hint_tokens';
+const K_MUTED = 'os2_sound_muted';
+const STORY_LEVELS = 60;   // worlds 1–6; world 7 is endless
 
 export const START_HINTS = 3;
 export const HINTS_PER_PERFECT = 1;
@@ -88,6 +90,19 @@ export const progress = {
     return true;
   },
 
+  /** Share of the 60 world levels cleared, for SDK completion reporting. */
+  completionPercent(): number {
+    return Math.min(100, ((this.maxLevel() - 1) / STORY_LEVELS) * 100);
+  },
+
+  soundMuted(): boolean {
+    return crazyGames.getItem(K_MUTED) === '1';
+  },
+
+  setSoundMuted(muted: boolean): void {
+    crazyGames.setItem(K_MUTED, muted ? '1' : '0');
+  },
+
   seenIntro(world: number): boolean {
     return readJSON<number[]>(K_SEEN, []).includes(world);
   },
@@ -100,37 +115,3 @@ export const progress = {
     }
   },
 };
-
-// If the SDK finished initialising only after the game had started (slow network),
-// saves made so far went to localStorage only. Merge both sources so progress never
-// rolls back: highest level / stars / Rush best win, seen intros are unioned, and the
-// hint count from this session is kept.
-function reconcileLateInit(): void {
-  const both = (key: string) => ({ sdk: crazyGames.getRaw('sdk', key), local: crazyGames.getRaw('local', key) });
-  const parse = <T>(raw: string | null, fallback: T): T => {
-    try { return raw ? (JSON.parse(raw) as T) : fallback; } catch (_) { return fallback; }
-  };
-  const maxInt = (key: string) => {
-    const v = both(key);
-    const n = Math.max(parseInt(v.sdk || '0', 10) || 0, parseInt(v.local || '0', 10) || 0);
-    if (n > 0) crazyGames.setItem(key, String(n));
-  };
-  maxInt(K_MAX);
-  maxInt(K_RUSH);
-
-  const stars = both(K_STARS);
-  const merged: Record<string, number> = { ...parse<Record<string, number>>(stars.sdk, {}) };
-  for (const [lvl, n] of Object.entries(parse<Record<string, number>>(stars.local, {}))) {
-    merged[lvl] = Math.max(merged[lvl] ?? 0, n);
-  }
-  crazyGames.setItem(K_STARS, JSON.stringify(merged));
-
-  const seen = both(K_SEEN);
-  const union = [...new Set([...parse<number[]>(seen.sdk, []), ...parse<number[]>(seen.local, [])])];
-  crazyGames.setItem(K_SEEN, JSON.stringify(union));
-
-  const hints = both(K_HINTS).local;
-  if (hints !== null) crazyGames.setItem(K_HINTS, hints);
-}
-
-crazyGames.onLateInit(reconcileLateInit);

@@ -253,6 +253,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.phase = 'play';
+    crazyGames.setLevelContext(this.mode === 'level' ? this.level : null);
     crazyGames.gameplayStart();
     this.showLevelTip();
     if (this.restoreHint) {
@@ -550,6 +551,15 @@ export class GameScene extends Phaser.Scene {
       this.add.rectangle(x - t.width / 2 - 6 * u, y, 10 * u, 10 * u, line.color).setRounded(3 * u);
     });
 
+    // Desktop: show the keyboard controls (CrazyGames quality guideline: show controls)
+    if (!crazyGames.isTouchDevice() && legend.length === 0 && (this.mode === 'rush' || this.level <= 6)) {
+      const y = L ? vp.y(530) : vp.y(632);
+      const keys = L
+        ? 'Keys: ← → ↑ ↓ slide\nW A S D pick a line\nZ undo · R retry' + (this.mode === 'level' ? ' · H hint' : '')
+        : 'Keys: ← → ↑ ↓ slide · W A S D pick a line\nZ undo · R retry' + (this.mode === 'level' ? ' · H hint' : '');
+      text(this, vp.x(L ? 160 : 230), y + (L ? 10 * u : 0), keys, (L ? 13 : 12) * u, COLORS.textMuted).setLineSpacing(4 * u);
+    }
+
     // Top bar: map + sound
     button(this, vp.x(L ? 70 : 46), vp.y(L ? 44 : 32), (L ? 96 : 72) * u, (L ? 40 : 34) * u, 'Map', () => this.goMap(), { fontPx: (L ? 16 : 14) * u });
     const sound = button(this, vp.x(L ? 935 : 418), vp.y(L ? 44 : 32), (L ? 96 : 64) * u, (L ? 40 : 34) * u,
@@ -708,7 +718,7 @@ export class GameScene extends Phaser.Scene {
     const n = this.puzzle.size;
     const names3 = { row: ['top row', 'middle row', 'bottom row'], col: ['left column', 'middle column', 'right column'] };
     const name = n === 3 ? names3[m.type][m.index] : `${m.type === 'row' ? 'row' : 'column'} ${m.index + 1}`;
-    return `Swipe the ${name} ${m.direction}`;
+    return `${crazyGames.isTouchDevice() ? 'Swipe' : 'Drag'} the ${name} ${m.direction}`;
   }
 
   // ─── Input ──────────────────────────────────────────────────────────────────
@@ -1127,6 +1137,7 @@ export class GameScene extends Phaser.Scene {
     this.stars = this.currentStars();
     const prevStars = progress.stars(this.level);
     const firstClear = progress.recordClear(this.level, this.stars);
+    crazyGames.reportCompletion(progress.completionPercent());
     // Hints are earned by skill: first ★★★ on a level, and finishing a world
     this.earnedHints = 0;
     if (!this.freeHints() && this.stars === 3 && prevStars < 3) this.earnedHints += HINTS_PER_PERFECT;
@@ -1185,6 +1196,7 @@ export class GameScene extends Phaser.Scene {
     if (this.leaving) return;
     this.leaving = true;
     crazyGames.gameplayStop();
+    crazyGames.setLevelContext(null);
     this.cameras.main.fadeOut(120, 10, 15, 46);
     this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start(SCENE.MAP));
   }
