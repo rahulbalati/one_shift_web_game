@@ -1,4 +1,4 @@
-// ─── CrazyGames SDK v3 Integration ───────────────────────────────────────────
+// ─── CrazyGames platform (SDK v3) ────────────────────────────────────────────
 // Lifecycle (in this order, each at most once where it applies):
 //   1. init()           – awaited in main.ts BEFORE the game is created
 //   2. loadingStart()   – right after init, before Phaser boots
@@ -7,7 +7,8 @@
 // The SDK is only ever called when init succeeded AND the environment is
 // 'crazygames' or 'local'. In the 'disabled' environment every SDK call throws,
 // so nothing is called there and the game runs on plain localStorage instead.
-import { sounds } from '../audio/SoundManager.ts';
+import type { BreakContext, BreakKind, Capabilities, Platform } from './Platform.ts';
+import { Listeners, browserIsTouch, localStore, safe } from './common.ts';
 
 type Environment = 'crazygames' | 'local' | 'disabled';
 
@@ -59,11 +60,12 @@ declare global {
 
 const INIT_TIMEOUT_MS = 10_000;
 
-function safe<T>(fn: () => T): T | undefined {
-  try { return fn(); } catch (_) { return undefined; }
-}
+class CrazyGamesPlatform implements Platform {
+  readonly name = 'crazygames' as const;
+  readonly caps: Capabilities = { startScreen: false, cloudSave: true, platformMute: true, ads: true };
+  private muteListeners = new Listeners<boolean>();
+  private adListeners = new Listeners<boolean>();
 
-class CrazyGamesBridge {
   /** The SDK, set only when init succeeded in a supported environment. */
   private sdk: CrazyGamesSDKInterface | null = null;
   private initPromise: Promise<void> | null = null;
@@ -103,9 +105,9 @@ class CrazyGamesBridge {
 
       // Platform mute setting always overrides the in-game toggle
       const mute = safe(() => SDK.game.settings?.muteAudio);
-      if (typeof mute === 'boolean') sounds.setSdkMute(mute);
+      if (typeof mute === 'boolean') this.muteListeners.emit(mute);
       safe(() => SDK.game.addSettingsChangeListener?.(settings => {
-        if (typeof settings.muteAudio === 'boolean') sounds.setSdkMute(settings.muteAudio);
+        if (typeof settings.muteAudio === 'boolean') this.muteListeners.emit(settings.muteAudio);
       }));
     })();
     return this.initPromise;
@@ -159,7 +161,7 @@ class CrazyGamesBridge {
   }
 
   /** Real achievements only (world completed, new Rush best) – never plain level clears. */
-  happytime(): void {
+  celebrate(): void {
     if (this.sdk) safe(() => this.sdk!.game.happytime());
   }
 
@@ -189,7 +191,15 @@ class CrazyGamesBridge {
   isTouchDevice(): boolean {
     const type = this.systemInfo()?.device?.type;
     if (type) return type !== 'desktop';
-    return safe(() => window.matchMedia('(pointer: coarse)').matches) ?? false;
+    return browserIsTouch();
+  }
+
+  onMuteChange(cb: (muted: boolean) => void): void {
+    this.muteListeners.add(cb);
+  }
+
+  onAdChange(cb: (playing: boolean) => void): void {
+    this.adListeners.add(cb);
   }
 
   // ─── Data Module ────────────────────────────────────────────────────────────
@@ -204,7 +214,7 @@ class CrazyGamesBridge {
     if (data) {
       try { return data.getItem(key) ?? null; } catch (_) { this.dataFailed = true; }
     }
-    return safe(() => localStorage.getItem(key)) ?? null;
+    return localStore.get(key);
   }
 
   setItem(key: string, value: string): void {
@@ -212,7 +222,7 @@ class CrazyGamesBridge {
     if (data) {
       try { data.setItem(key, value); return; } catch (_) { this.dataFailed = true; }
     }
-    safe(() => localStorage.setItem(key, value));
+    localStore.set(key, value);
   }
 
   // ─── Paced Midgame Ads ──────────────────────────────────────────────────────
@@ -220,15 +230,15 @@ class CrazyGamesBridge {
   // (Ads are disabled by CrazyGames during Basic Launch anyway.)
   private lastAdAt = Date.now();
 
-  maybeMidgameAd(level: number, onComplete: () => void): void {
+  breakPoint(_kind: BreakKind, ctx: BreakContext, done: () => void): void {
     const MIN_LEVEL = 6;
     const MIN_GAP_MS = 180_000;
-    if (!this.sdk || level < MIN_LEVEL || Date.now() - this.lastAdAt < MIN_GAP_MS) {
-      onComplete();
+    if (!this.sdk || ctx.level < MIN_LEVEL || Date.now() - this.lastAdAt < MIN_GAP_MS) {
+      done();
       return;
     }
     this.lastAdAt = Date.now();
-    this.requestMidgameAd(onComplete);
+    this.requestMidgameAd(done);
   }
 
   private requestMidgameAd(onComplete: () => void): void {
@@ -238,7 +248,7 @@ class CrazyGamesBridge {
     const finish = () => {
       if (completed) return;
       completed = true;
-      if (started) sounds.startBGM();    // unmute only after a real ad
+      if (started) this.adListeners.emit(false);    // music back only after a real ad
       onComplete();
     };
     // Never leave the player stuck if the SDK never responds (but never cut a running ad)
@@ -255,11 +265,11 @@ class CrazyGamesBridge {
       const result = requestAd.call(this.sdk!.ad, 'midgame', {
         adStarted: () => {
           started = true;
-          sounds.stopBGM();
+          this.adListeners.emit(true);
         },
         adFinished: () => {
           // An ad that started after the fallback fired: only restore the music
-          if (timedOut) sounds.startBGM();
+          if (timedOut) this.adListeners.emit(false);
           finish();
         },
         adError: () => finish(),
@@ -271,4 +281,6 @@ class CrazyGamesBridge {
   }
 }
 
-export const crazyGames = new CrazyGamesBridge();
+export function createCrazyGamesPlatform(): Platform {
+  return new CrazyGamesPlatform();
+}

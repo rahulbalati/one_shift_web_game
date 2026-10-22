@@ -13,7 +13,7 @@ import { solve } from '../game/Solver.ts';
 import { buildLevel, buildRush, worldOf } from '../game/Levels.ts';
 import { progress, HINTS_PER_PERFECT, HINTS_PER_WORLD } from '../game/Progress.ts';
 import { sounds, triggerHaptic } from '../audio/SoundManager.ts';
-import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { platform } from '../platform/index.ts';
 import { button, chip, darken, drawBackground as drawThemeBackground, drawIcon, drawLock, iconButton, onViewportResize, panelBox, sparkle, starString, text, viewport } from '../ui/ui.ts';
 import type { IconButton, Viewport } from '../ui/ui.ts';
 
@@ -248,8 +248,8 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.phase = 'play';
-    crazyGames.setLevelContext(this.mode === 'level' ? this.level : null);
-    crazyGames.gameplayStart();
+    platform.setLevelContext(this.mode === 'level' ? this.level : null);
+    platform.gameplayStart();
     this.showLevelTip();
     if (this.restoreHint) {
       this.restoreHint = false;
@@ -590,7 +590,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Desktop: show the keyboard controls (CrazyGames quality guideline: show controls)
-    if (!crazyGames.isTouchDevice() && legend.length === 0 && (this.mode === 'rush' || this.level <= 6)) {
+    if (!platform.isTouchDevice() && legend.length === 0 && (this.mode === 'rush' || this.level <= 6)) {
       const y = L ? vp.y(530) : vp.y(632);
       const keys = L
         ? 'Keys: ← → ↑ ↓ slide\nW A S D pick a line\nZ undo · R retry' + (this.mode === 'level' ? ' · H hint' : '')
@@ -748,7 +748,7 @@ export class GameScene extends Phaser.Scene {
     const n = this.puzzle.size;
     const names3 = { row: ['top row', 'middle row', 'bottom row'], col: ['left column', 'middle column', 'right column'] };
     const name = n === 3 ? names3[m.type][m.index] : `${m.type === 'row' ? 'row' : 'column'} ${m.index + 1}`;
-    return `${crazyGames.isTouchDevice() ? 'Swipe' : 'Drag'} the ${name} ${m.direction}`;
+    return `${platform.isTouchDevice() ? 'Swipe' : 'Drag'} the ${name} ${m.direction}`;
   }
 
   // ─── Input ──────────────────────────────────────────────────────────────────
@@ -1153,7 +1153,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.time.delayedCall(150, () => this.refreshStates(false, []));
     this.updateHud();
-    crazyGames.gameplayStart();
+    platform.gameplayStart();
     if (this.mode === 'level' && this.level <= 2) this.time.delayedCall(220, () => this.showHint(false));
   }
 
@@ -1174,7 +1174,7 @@ export class GameScene extends Phaser.Scene {
     this.stars = this.currentStars();
     const prevStars = progress.stars(this.level);
     const firstClear = progress.recordClear(this.level, this.stars);
-    crazyGames.reportCompletion(progress.completionPercent());
+    platform.reportCompletion(progress.completionPercent());
     // Hints are earned by skill: first ★★★ on a level, and finishing a world
     this.earnedHints = 0;
     if (!this.freeHints() && this.stars === 3 && prevStars < 3) this.earnedHints += HINTS_PER_PERFECT;
@@ -1185,9 +1185,9 @@ export class GameScene extends Phaser.Scene {
       progress.addHints(this.earnedHints);
       this.updateHintBadge();
     }
-    crazyGames.gameplayStop();
-    // happytime is for real achievements only (SDK rule: not for level completion)
-    if (this.worldDone) crazyGames.happytime();
+    platform.gameplayStop();
+    // celebrate() is for real achievements only (platform rule: not for level completion)
+    if (this.worldDone) platform.celebrate();
     sounds.playVictory();
     triggerHaptic([30, 50, 30]);
     this.celebrateTiles();
@@ -1209,7 +1209,7 @@ export class GameScene extends Phaser.Scene {
   private onFail() {
     if (this.phase !== 'failed' || this.resolved) return;   // e.g. Retry tapped during the delay
     this.resolved = true;
-    crazyGames.gameplayStop();
+    platform.gameplayStop();
     sounds.playTimeUp();
     triggerHaptic([20, 40, 20]);
     this.showFailPanel();
@@ -1220,7 +1220,7 @@ export class GameScene extends Phaser.Scene {
     const world = worldOf(this.level);
     const finishedWorld = this.worldDone;   // only the first completion goes to the map
     this.leaving = true;
-    crazyGames.maybeMidgameAd(this.level, () => {
+    platform.breakPoint('levelEnd', { level: this.level }, () => {
       this.cameras.main.fadeOut(140, ...BG_RGB);
       this.cameras.main.once('camerafadeoutcomplete', () => {
         if (finishedWorld) this.scene.start(SCENE.MAP, { unlockedWorld: world.id + 1 });
@@ -1232,8 +1232,8 @@ export class GameScene extends Phaser.Scene {
   private goMap() {
     if (this.leaving) return;
     this.leaving = true;
-    crazyGames.gameplayStop();
-    crazyGames.setLevelContext(null);
+    platform.gameplayStop();
+    platform.setLevelContext(null);
     this.cameras.main.fadeOut(120, ...BG_RGB);
     this.cameras.main.once('camerafadeoutcomplete', () => this.scene.start(SCENE.MAP));
   }
@@ -1284,7 +1284,7 @@ export class GameScene extends Phaser.Scene {
   private onRushOver() {
     this.phase = 'rushover';
     this.drag = null;
-    crazyGames.gameplayStop();
+    platform.gameplayStop();
     sounds.playTimeUp();
     this.showRushOverPanel(true);
   }
@@ -1425,7 +1425,7 @@ export class GameScene extends Phaser.Scene {
     this.closePanel();
     this.phase = 'play';
     this.updateHud();
-    crazyGames.gameplayStart();
+    platform.gameplayStart();
   }
 
   private showRushOverPanel(fresh: boolean) {
@@ -1434,7 +1434,7 @@ export class GameScene extends Phaser.Scene {
     const best = progress.rushBest();
     if (fresh) this.rushIsBest = progress.recordRush(r.score);
     const isBest = this.rushIsBest;
-    if (fresh && isBest) crazyGames.happytime();
+    if (fresh && isBest) platform.celebrate();
     const { c, cx, cy } = this.openPanel(280);
     c.add(text(this, cx, cy - 100 * u, "Time's up!", 30 * u, COLORS.warning, true));
     c.add(text(this, cx, cy - 46 * u, `${r.score}`, 54 * u, COLORS.text, true));
@@ -1443,7 +1443,7 @@ export class GameScene extends Phaser.Scene {
     const again = () => {
       if (this.leaving) return;
       this.leaving = true;
-      crazyGames.maybeMidgameAd(progress.maxLevel(), () => this.scene.restart({ mode: 'rush' }));
+      platform.breakPoint('restart', { level: progress.maxLevel() }, () => this.scene.restart({ mode: 'rush' }));
     };
     this.panelPrimary = again;
     c.add(button(this, cx - 92 * u, cy + 80 * u, 168 * u, 52 * u, 'Map', () => this.goMap(), { fontPx: 17 * u }));
@@ -1473,7 +1473,7 @@ export class GameScene extends Phaser.Scene {
     if (this.phase !== 'play' || this.panel || this.leaving) return;
     this.paused = true;
     this.drag = null;
-    crazyGames.gameplayStop();
+    platform.gameplayStop();
     this.showPausePanel();
   }
 
@@ -1515,7 +1515,7 @@ export class GameScene extends Phaser.Scene {
   private showHowTo() {
     const u = this.vp.u;
     const { c, cx, cy } = this.openPanel(420);
-    const touch = crazyGames.isTouchDevice();
+    const touch = platform.isTouchDevice();
     c.add(text(this, cx, cy - 170 * u, 'How to play', 26 * u, COLORS.text, true));
     const lines = [
       this.puzzle.kind === 'pattern'
@@ -1537,7 +1537,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.paused) return;
     this.paused = false;
     this.closePanel();
-    if (this.phase === 'play') crazyGames.gameplayStart();
+    if (this.phase === 'play') platform.gameplayStart();
   }
 
   private setupVisibility() {

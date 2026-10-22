@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { SCENE } from '../config.ts';
-import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { platform } from '../platform/index.ts';
 import { progress } from '../game/Progress.ts';
 
 // No title screen: new players land straight on level 1, returning players on the map.
@@ -10,7 +10,7 @@ export class BootScene extends Phaser.Scene {
   }
 
   create() {
-    crazyGames.loadingStop();
+    platform.loadingStop();
     if (progress.maxLevel() <= 1) {
       this.scene.start(SCENE.GAME, { mode: 'level', level: 1 });
     } else {

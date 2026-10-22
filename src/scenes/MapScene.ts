@@ -4,7 +4,7 @@ import { WORLDS, LEVELS_PER_WORLD, RUSH_UNLOCK_LEVEL, worldOf } from '../game/Le
 import type { WorldInfo } from '../game/Levels.ts';
 import { progress } from '../game/Progress.ts';
 import { sounds } from '../audio/SoundManager.ts';
-import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { platform } from '../platform/index.ts';
 import { button, chip, drawBackground, drawLock, iconButton, onViewportResize, panelBox, starString, text, viewport } from '../ui/ui.ts';
 import type { Viewport } from '../ui/ui.ts';
 
@@ -41,8 +41,8 @@ export class MapScene extends Phaser.Scene {
   }
 
   create() {
-    crazyGames.gameplayStop();
-    crazyGames.setLevelContext(null);
+    platform.gameplayStop();
+    platform.setLevelContext(null);
     this.vp = viewport(this);
     drawBackground(this, this.vp);
     const { vp } = this;

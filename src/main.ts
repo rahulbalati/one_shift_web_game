@@ -3,7 +3,7 @@ import { BootScene } from './scenes/BootScene.ts';
 import { GameScene } from './scenes/GameScene.ts';
 import { MapScene } from './scenes/MapScene.ts';
 import { COLORS } from './config.ts';
-import { crazyGames } from './sdk/CrazyGamesSDK.ts';
+import { platform } from './platform/index.ts';
 import { progress } from './game/Progress.ts';
 import { sounds } from './audio/SoundManager.ts';
 
@@ -49,9 +49,8 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 async function bootstrap() {
-  // Browser defaults that would move the CrazyGames page around the game
-  // (CrazyGames "Common fixes"): context menu, touch scroll, mouse-wheel scroll,
-  // and arrow keys / space scrolling.
+  // Browser defaults that would move the host page around the game: context menu,
+  // touch scroll, mouse-wheel scroll, and arrow keys / space scrolling.
   document.addEventListener('contextmenu', e => e.preventDefault());
   document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
   window.addEventListener('wheel', e => e.preventDefault(), { passive: false });
@@ -59,22 +58,27 @@ async function bootstrap() {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code) || e.key === ' ') e.preventDefault();
   });
 
-  // The SDK must be fully initialised before any save data is read, so the game is
-  // created only after init (it has its own timeout). Fonts load in parallel, capped.
+  // Platform signals → audio. This is the only place game and platform meet: the
+  // platform reports mute/ad changes, the game decides what that means for sound.
+  platform.onMuteChange(muted => sounds.setPlatformMute(muted));
+  platform.onAdChange(playing => (playing ? sounds.stopBGM() : sounds.startBGM()));
+
+  // The platform must be fully initialised before any save data is read, so the game
+  // is created only after init (it has its own timeout). Fonts load in parallel, capped.
   const cap = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
   const fonts = 'fonts' in document ? document.fonts.ready.then(() => undefined).catch(() => undefined) : Promise.resolve();
   await Promise.all([
     Promise.race([fonts, cap(700)]),
-    crazyGames.init(),
+    platform.init(),
   ]);
 
-  // Restore the player's own sound choice from the save (Data Module on CrazyGames)
+  // Restore the player's own sound choices from the save
   sounds.setUserMuted(progress.soundMuted());
   sounds.onUserMuteChange = muted => progress.setSoundMuted(muted);
   sounds.setMusicMuted(progress.musicMuted());
   sounds.onMusicChange = muted => progress.setMusicMuted(muted);
 
-  crazyGames.loadingStart();
+  platform.loadingStart();
   const game = new Phaser.Game(config);
   if (import.meta.env.DEV) (window as unknown as { __game: Phaser.Game }).__game = game;
 
@@ -94,21 +98,6 @@ async function bootstrap() {
   if (container && 'ResizeObserver' in window) new ResizeObserver(resize).observe(container);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resize(); });
   resize();
-
-  // Platform hooks (Telegram, YouTube Playables)
-  try {
-    const w = window as unknown as {
-      Telegram?: { WebApp?: { ready?: () => void; expand?: () => void; setHeaderColor?: (c: string) => void; setBackgroundColor?: (c: string) => void } };
-      YT_PLAYABLES?: { firstFrameReady?: () => void; gameReady?: () => void };
-    };
-    const tg = w.Telegram?.WebApp;
-    tg?.ready?.();
-    tg?.expand?.();
-    tg?.setHeaderColor?.('#0a0f2e');
-    tg?.setBackgroundColor?.('#0a0f2e');
-    w.YT_PLAYABLES?.firstFrameReady?.();
-    w.YT_PLAYABLES?.gameReady?.();
-  } catch (_) {}
 }
 
 bootstrap();

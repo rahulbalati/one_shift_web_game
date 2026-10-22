@@ -5,11 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:web": "vite --mode web",
     "build": "tsc && vite build",
+    "build:crazygames": "tsc && vite build --mode crazygames",
+    "build:web": "tsc && vite build --mode web",
     "preview": "vite preview",
-    "pack:zip": "rm -f one-shift-playable.zip && npm run build && cd dist && zip -9 -r ../one-shift-playable.zip . -x '.*'",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "preview:web": "vite preview --mode web",
+    "pack:zip": "rm -f one-shift-playable.zip && npm run build:crazygames && cd dist/crazygames && zip -9 -r ../../one-shift-playable.zip . -x '.*'",
+    "pack:crazygames": "npm run build:crazygames && mkdir -p release && rm -f release/one-shift-crazygames.zip && cd dist/crazygames && zip -9 -r ../../release/one-shift-crazygames.zip . -x '.*'",
+    "pack:web": "npm run build:web && mkdir -p release && rm -f release/one-shift-web.zip && cd dist/web && zip -9 -r ../../release/one-shift-web.zip . -x '.*'",
+    "release": "npm run pack:crazygames && npm run pack:web",
+    "predeploy": "npm run build:web",
+    "deploy": "gh-pages -d dist/web"
   },
   "devDependencies": {
     "gh-pages": "^6.3.0",

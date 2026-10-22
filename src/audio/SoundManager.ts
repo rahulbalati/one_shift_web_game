@@ -47,7 +47,7 @@ class SoundManager {
   private compressor: DynamicsCompressorNode | null = null;
   private muted = false;          // player's sound-effects switch
   private musicMuted = false;     // player's music switch
-  private sdkMuted = false;       // CrazyGames platform mute: overrides both
+  private platformMuted = false;  // platform-wide mute (e.g. CrazyGames setting): overrides both
   private bgmPlaying = false;
   private musicBus: GainNode | null = null;
   private nextNoteTime = 0;
@@ -116,7 +116,7 @@ class SoundManager {
   private handleAppForeground() {
     if (!this.ctx) return;
     const restore = () => {
-      if (!this.ctx || !this.masterGain || this.sdkMuted) return;
+      if (!this.ctx || !this.masterGain || this.platformMuted) return;
       const now = this.ctx.currentTime;
       this.masterGain.gain.cancelScheduledValues(now);
       this.masterGain.gain.setValueAtTime(0.0001, now);
@@ -133,7 +133,7 @@ class SoundManager {
       if (AudioCtx) {
         this.ctx = new AudioCtx();
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.setValueAtTime(this.sdkMuted ? 0 : 1, this.ctx.currentTime);
+        this.masterGain.gain.setValueAtTime(this.platformMuted ? 0 : 1, this.ctx.currentTime);
         // Keeps the mix under 0 dB during fast tapping
         this.compressor = this.ctx.createDynamicsCompressor();
         this.compressor.threshold.setValueAtTime(-10, this.ctx.currentTime);
@@ -161,13 +161,13 @@ class SoundManager {
 
   resume() {
     this.initCtx();
-    if (this.masterGain && this.ctx) this.masterGain.gain.setValueAtTime(this.sdkMuted ? 0 : 1, this.ctx.currentTime);
+    if (this.masterGain && this.ctx) this.masterGain.gain.setValueAtTime(this.platformMuted ? 0 : 1, this.ctx.currentTime);
     if (this.musicOn() && !this.bgmPlaying) this.startBGM();
   }
 
-  /** CrazyGames muteAudio setting: silences everything and wins over the in-game switches. */
-  setSdkMute(muted: boolean) {
-    this.sdkMuted = muted;
+  /** Platform mute (e.g. CrazyGames muteAudio): silences everything and wins over the in-game switches. */
+  setPlatformMute(muted: boolean) {
+    this.platformMuted = muted;
     if (this.masterGain && this.ctx) this.masterGain.gain.setValueAtTime(muted ? 0 : 1, this.ctx.currentTime);
     if (!this.musicOn()) this.stopBGM();
     else if (!this.bgmPlaying) this.startBGM();
@@ -175,11 +175,11 @@ class SoundManager {
 
   /** Sound effects are off (player switch or platform mute). */
   isMuted(): boolean {
-    return this.muted || this.sdkMuted;
+    return this.muted || this.platformMuted;
   }
 
   musicOn(): boolean {
-    return !this.musicMuted && !this.sdkMuted;
+    return !this.musicMuted && !this.platformMuted;
   }
 
   /** Restores saved switches at boot (no sound, no save). */

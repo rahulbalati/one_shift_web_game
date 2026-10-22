@@ -1,6 +1,6 @@
-import { crazyGames } from '../sdk/CrazyGamesSDK.ts';
+import { platform } from '../platform/index.ts';
 
-// Saved through the CrazyGames Data Module; localStorage only when the SDK is unavailable.
+// Saved through the platform's save storage (e.g. the CrazyGames Data Module, or the browser).
 const K_MAX = 'os2_max_level';
 const K_STARS = 'os2_stars';
 const K_RUSH = 'os2_rush_best';
@@ -16,7 +16,7 @@ export const HINTS_PER_WORLD = 2;
 
 function readJSON<T>(key: string, fallback: T): T {
   try {
-    const raw = crazyGames.getItem(key);
+    const raw = platform.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
   } catch (_) {
     return fallback;
@@ -24,7 +24,7 @@ function readJSON<T>(key: string, fallback: T): T {
 }
 
 function readInt(key: string, fallback: number): number {
-  const v = parseInt(crazyGames.getItem(key) || '', 10);
+  const v = parseInt(platform.getItem(key) || '', 10);
   return isNaN(v) ? fallback : v;
 }
 
@@ -51,11 +51,11 @@ export const progress = {
     const all = this.allStars();
     if ((all[level] ?? 0) < stars) {
       all[level] = stars;
-      crazyGames.setItem(K_STARS, JSON.stringify(all));
+      platform.setItem(K_STARS, JSON.stringify(all));
     }
     const max = this.maxLevel();
     if (level + 1 > max) {
-      crazyGames.setItem(K_MAX, String(level + 1));
+      platform.setItem(K_MAX, String(level + 1));
       return true;
     }
     return false;
@@ -67,7 +67,7 @@ export const progress = {
 
   recordRush(score: number): boolean {
     if (score > this.rushBest()) {
-      crazyGames.setItem(K_RUSH, String(score));
+      platform.setItem(K_RUSH, String(score));
       return true;
     }
     return false;
@@ -79,7 +79,7 @@ export const progress = {
 
   addHints(n: number): number {
     const v = this.hints() + n;
-    crazyGames.setItem(K_HINTS, String(v));
+    platform.setItem(K_HINTS, String(v));
     return v;
   },
 
@@ -87,7 +87,7 @@ export const progress = {
   spendHint(): boolean {
     const v = this.hints();
     if (v <= 0) return false;
-    crazyGames.setItem(K_HINTS, String(v - 1));
+    platform.setItem(K_HINTS, String(v - 1));
     return true;
   },
 
@@ -97,19 +97,19 @@ export const progress = {
   },
 
   soundMuted(): boolean {
-    return crazyGames.getItem(K_MUTED) === '1';
+    return platform.getItem(K_MUTED) === '1';
   },
 
   setSoundMuted(muted: boolean): void {
-    crazyGames.setItem(K_MUTED, muted ? '1' : '0');
+    platform.setItem(K_MUTED, muted ? '1' : '0');
   },
 
   musicMuted(): boolean {
-    return crazyGames.getItem(K_MUSIC) === '1';
+    return platform.getItem(K_MUSIC) === '1';
   },
 
   setMusicMuted(muted: boolean): void {
-    crazyGames.setItem(K_MUSIC, muted ? '1' : '0');
+    platform.setItem(K_MUSIC, muted ? '1' : '0');
   },
 
   seenIntro(world: number): boolean {
@@ -120,7 +120,7 @@ export const progress = {
     const seen = readJSON<number[]>(K_SEEN, []);
     if (!seen.includes(world)) {
       seen.push(world);
-      crazyGames.setItem(K_SEEN, JSON.stringify(seen));
+      platform.setItem(K_SEEN, JSON.stringify(seen));
     }
   },
 };
